@@ -3,8 +3,13 @@ name = 'Stacks-Skills'
 description = ''
 authors = []
 telemetry = true
-cache_dir = './.cache'
+cache_dir = '.\.cache'
 requirements = []
+[contracts.constants]
+path = 'contracts/constants.clar'
+clarity_version = 2
+epoch = 2.5
+
 [contracts.sip-010-trait]
 path = 'contracts/sip-010-trait.clar'
 clarity_version = 2
