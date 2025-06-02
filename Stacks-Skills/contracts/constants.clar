@@ -79,6 +79,34 @@
 ;; Price staleness threshold (blocks)
 (define-constant PRICE-STALENESS-THRESHOLD u144) ;; ~24 hours
 
+;; Payment token types
+(define-constant TOKEN-USDT u1)
+(define-constant TOKEN-USDC u2)
+(define-constant TOKEN-STX u3) ;; PRIMARY TOKEN
+
+;; Bridge chain identifiers
+(define-constant CHAIN-BITCOIN u0)
+(define-constant CHAIN-ETHEREUM u1)
+(define-constant CHAIN-POLYGON u2)
+(define-constant CHAIN-BSC u3)
+(define-constant CHAIN-ARBITRUM u4)
+(define-constant CHAIN-AVALANCHE u5)
+
+;; Bridge status
+(define-constant STATUS-PENDING u0)
+(define-constant STATUS-COMPLETED u1)
+(define-constant STATUS-FAILED u2)
+(define-constant STATUS-REFUNDED u3)
+
+;; Conversion status
+(define-constant CONVERSION-PENDING u0)
+(define-constant CONVERSION-COMPLETED u1)
+(define-constant CONVERSION-FAILED u2)
+
+;; Bridge constants
+(define-constant DEFAULT-BRIDGE-FEE u150) ;; 1.5% for STX bridging
+(define-constant MIN-CONFIRMATIONS u6)
+
 ;; STX-specific constants
 (define-constant STX-DECIMALS u6) ;; STX uses 6 decimals (microSTX)
 (define-constant MIN-STX-AMOUNT u1000000) ;; 1 STX minimum
@@ -87,6 +115,9 @@
 ;; Public functions to access constants (required for contract calls)
 (define-read-only (get-platform-fee-rate) PLATFORM-FEE-RATE)
 (define-read-only (get-basis-points) BASIS-POINTS)
+(define-read-only (get-token-usdt) TOKEN-USDT)
+(define-read-only (get-token-usdc) TOKEN-USDC)
+(define-read-only (get-token-stx) TOKEN-STX)
 
 ;; Error constants as public read-only functions
 (define-read-only (err-unauthorized) ERR-UNAUTHORIZED)
@@ -132,8 +163,24 @@
 (define-read-only (get-service-status-disputed) SERVICE-STATUS-DISPUTED)
 (define-read-only (get-service-status-cancelled) SERVICE-STATUS-CANCELLED)
 
+(define-read-only (get-status-pending) STATUS-PENDING)
+(define-read-only (get-status-completed) STATUS-COMPLETED)
+(define-read-only (get-status-failed) STATUS-FAILED)
+(define-read-only (get-status-refunded) STATUS-REFUNDED)
+
+(define-read-only (get-conversion-pending) CONVERSION-PENDING)
+(define-read-only (get-conversion-completed) CONVERSION-COMPLETED)
+(define-read-only (get-conversion-failed) CONVERSION-FAILED)
+
 (define-read-only (get-min-rating) MIN-RATING)
 (define-read-only (get-max-rating) MAX-RATING)
+
+(define-read-only (get-chain-bitcoin) CHAIN-BITCOIN)
+(define-read-only (get-chain-ethereum) CHAIN-ETHEREUM)
+(define-read-only (get-chain-polygon) CHAIN-POLYGON)
+(define-read-only (get-chain-bsc) CHAIN-BSC)
+(define-read-only (get-chain-arbitrum) CHAIN-ARBITRUM)
+(define-read-only (get-chain-avalanche) CHAIN-AVALANCHE)
 
 (define-read-only (get-blocks-per-day) BLOCKS-PER-DAY)
 (define-read-only (get-blocks-per-year) BLOCKS-PER-YEAR)
@@ -144,6 +191,7 @@
 (define-read-only (get-stx-decimals) STX-DECIMALS)
 (define-read-only (get-min-stx-amount) MIN-STX-AMOUNT)
 (define-read-only (get-max-stx-amount) MAX-STX-AMOUNT)
+(define-read-only (get-default-bridge-fee) DEFAULT-BRIDGE-FEE)
 ;; Platform information
 (define-read-only (get-platform-info)
   {
