@@ -14,6 +14,11 @@ epoch = 2.5
 path = 'contracts/sip-010-trait.clar'
 clarity_version = 2
 epoch = 2.5
+
+[contracts.utils]
+path = 'contracts/utils.clar'
+clarity_version = 2
+epoch = 2.5
 [repl.analysis]
 passes = ['check_checker']
 
