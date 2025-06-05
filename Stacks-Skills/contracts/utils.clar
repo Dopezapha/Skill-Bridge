@@ -1,11 +1,14 @@
-;; SkillFlow Validation Contract
-;; Core validation functions for STX and other parameters
+;; utils.clar
+;; SkillFlow Enhanced Validation Contract
+;; Core validation functions for STX and other parameters plus comprehensive utilities
 
 ;; Maximum values for safety
 (define-constant MAX-STX-AMOUNT u100000000000) ;; Max 100K STX
 (define-constant MAX-TOKEN-AMOUNT u1000000000000) ;; Max 1M tokens for other assets
 (define-constant MAX-PERCENTAGE u10000) ;; 100% in basis points
 (define-constant BASIS-POINTS u10000)
+(define-constant BLOCKS-PER-YEAR u52560) ;; Approximate blocks per year
+(define-constant STX-DECIMALS u6) ;; STX uses 6 decimals
 
 ;; Basic validation functions
 (define-read-only (is-valid-token-type (token-type uint))
@@ -132,11 +135,82 @@
 (define-read-only (is-sufficient-stx-balance (user-balance uint) (required-amount uint) (fee-rate uint))
   (let 
     (
-      (fee-amount (/ (* required-amount fee-rate) BASIS-POINTS))
+      (fee-amount (calculate-stx-fee required-amount fee-rate))
       (total-needed (+ required-amount fee-amount))
     )
     (>= user-balance total-needed)
   )
+)
+
+;; Math utilities
+(define-read-only (calculate-percentage (amount uint) (percentage uint))
+  (/ (* amount percentage) BASIS-POINTS)
+)
+
+(define-read-only (calculate-stx-fee (stx-amount uint) (fee-rate uint))
+  (/ (* stx-amount fee-rate) BASIS-POINTS)
+)
+
+(define-read-only (calculate-yield (staked-amount uint) (blocks-elapsed uint) (yield-rate uint))
+  (if (and (> staked-amount u0) (> blocks-elapsed u0))
+    (/ (* (* staked-amount yield-rate) blocks-elapsed) (* BLOCKS-PER-YEAR BASIS-POINTS))
+    u0
+  )
+)
+
+(define-read-only (calculate-compound-yield 
+  (principal-amount uint) 
+  (annual-rate uint) 
+  (blocks-elapsed uint)
+  (compound-frequency uint)
+)
+  (let 
+    (
+      (periods-per-year (/ BLOCKS-PER-YEAR compound-frequency))
+      (rate-per-period (/ annual-rate periods-per-year))
+      (periods-elapsed (/ blocks-elapsed compound-frequency))
+    )
+    (if (and (> principal-amount u0) (> periods-elapsed u0))
+      (- (+ principal-amount (/ (* principal-amount rate-per-period periods-elapsed) BASIS-POINTS)) principal-amount)
+      u0
+    )
+  )
+)
+
+(define-read-only (calculate-fee-with-minimum (amount uint) (fee-rate uint) (minimum-fee uint))
+  (let ((calculated-fee (calculate-percentage amount fee-rate)))
+    (if (> calculated-fee minimum-fee)
+      calculated-fee
+      minimum-fee
+    )
+  )
+)
+
+(define-read-only (calculate-slippage (expected-amount uint) (actual-amount uint))
+  (if (> expected-amount u0)
+    (if (>= actual-amount expected-amount)
+      u0
+      (/ (* (- expected-amount actual-amount) BASIS-POINTS) expected-amount)
+    )
+    u0
+  )
+)
+
+;; STX conversion utilities
+(define-read-only (microSTX-to-STX (micro-stx uint))
+  (/ micro-stx u1000000)
+)
+
+(define-read-only (STX-to-microSTX (stx uint))
+  (* stx u1000000)
+)
+
+(define-read-only (format-stx-amount (micro-stx uint))
+  {
+    micro-stx: micro-stx,
+    stx: (microSTX-to-STX micro-stx),
+    formatted: (microSTX-to-STX micro-stx)
+  }
 )
 
 ;; Batch validation functions
@@ -191,7 +265,7 @@
 )
   (let 
     (
-      (fee-amount (/ (* amount fee-rate) BASIS-POINTS))
+      (fee-amount (calculate-stx-fee amount fee-rate))
       (total-needed (+ amount fee-amount))
     )
     {
@@ -206,6 +280,98 @@
         (is-valid-stx-amount amount)
         (>= user-balance total-needed)
       )
+    }
+  )
+)
+
+;; Utility functions for common operations
+(define-read-only (get-token-type-name (token-type uint))
+  (if (is-eq token-type u1)
+    "USDT"
+    (if (is-eq token-type u2)
+      "USDC"
+      (if (is-eq token-type u3)
+        "STX"
+        "UNKNOWN"
+      )
+    )
+  )
+)
+
+(define-read-only (get-blockchain-name (blockchain-id uint))
+  (if (is-eq blockchain-id u0)
+    "Bitcoin"
+    (if (is-eq blockchain-id u1)
+      "Ethereum"
+      (if (is-eq blockchain-id u2)
+        "Polygon"
+        (if (is-eq blockchain-id u3)
+          "BSC"
+          (if (is-eq blockchain-id u4)
+            "Arbitrum"
+            (if (is-eq blockchain-id u5)
+              "Avalanche"
+              "UNKNOWN"
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+(define-read-only (get-service-status-name (status uint))
+  (if (is-eq status u0)
+    "Open"
+    (if (is-eq status u1)
+      "Matched"
+      (if (is-eq status u2)
+        "In Progress"
+        (if (is-eq status u3)
+          "Completed"
+          (if (is-eq status u4)
+            "Disputed"
+            (if (is-eq status u5)
+              "Cancelled"
+              "UNKNOWN"
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; Platform utility functions
+(define-read-only (get-platform-token-info)
+  {
+    primary-token: "STX",
+    token-id: u3,
+    decimals: STX-DECIMALS,
+    native-currency: true,
+    min-amount: u1000000,
+    max-amount: MAX-STX-AMOUNT,
+    display-name: "Stacks (STX)"
+  }
+)
+
+(define-read-only (estimate-transaction-cost 
+  (base-amount uint) 
+  (platform-fee-rate uint)
+  (additional-fees (optional uint))
+)
+  (let 
+    (
+      (platform-fee (calculate-percentage base-amount platform-fee-rate))
+      (extra-fees (default-to u0 additional-fees))
+      (total-cost (+ base-amount platform-fee extra-fees))
+    )
+    {
+      base-amount: base-amount,
+      platform-fee: platform-fee,
+      additional-fees: extra-fees,
+      total-cost: total-cost,
+      formatted-total: (format-stx-amount total-cost)
     }
   )
 )
