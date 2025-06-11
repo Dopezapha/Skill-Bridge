@@ -134,6 +134,528 @@
   )
 )
 
+;; MAIN SERVICE CREATION
+(define-public (create-service-request
+  (skill-category (string-ascii 50))
+  (service-description (string-ascii 500))
+  (payment-amount uint) ;; in microSTX
+  (rush-delivery bool)
+  (duration-minutes uint)
+  (request-ai-suggestions bool)
+)
+  (let 
+    (
+      (service-id (var-get next-service-id))
+      (platform-fee (calculate-percentage payment-amount PLATFORM-FEE-RATE))
+      (total-payment (+ payment-amount platform-fee))
+      (expiration-time (+ block-height (if rush-delivery u60 u288)))
+      (application-deadline (+ block-height APPLICATION-WINDOW-BLOCKS))
+      (user-stx-balance (stx-get-balance tx-sender))
+    )
+    ;; Input validation
+    (asserts! (var-get platform-active) (err u100))
+    (asserts! (is-valid-string skill-category u1 u50) (err u117))
+    (asserts! (is-valid-string service-description u1 u500) (err u117))
+    (asserts! (is-valid-stx-amount payment-amount) (err u110))
+    (asserts! (<= duration-minutes u1440) (err u117))
+    (asserts! (>= payment-amount (var-get minimum-service-amount)) (err u110))
+    (asserts! (>= user-stx-balance total-payment) (err u120))
+    
+    ;; Transfer STX to escrow
+    (try! (stx-transfer? total-payment tx-sender (as-contract tx-sender)))
+    
+    ;; Create service request
+    (map-set service-requests service-id
+      {
+        client-address: tx-sender,
+        provider-address: none,
+        skill-category: skill-category,
+        service-description: service-description,
+        payment-amount: payment-amount,
+        creation-timestamp: block-height,
+        expiration-timestamp: expiration-time,
+        application-deadline: application-deadline,
+        current-status: u0,
+        video-session-url: none,
+        completion-evidence: none,
+        client-rating: none,
+        provider-rating: none,
+        rush-delivery: rush-delivery,
+        estimated-duration-minutes: duration-minutes,
+        ai-suggestions-generated: false,
+        client-selection-required: true
+      }
+    )
+    
+    ;; Setup escrow
+    (map-set payment-escrow-system service-id
+      {
+        total-escrowed-amount: total-payment,
+        platform-fee-amount: platform-fee,
+        provider-payout-amount: payment-amount,
+        funds-locked-status: true,
+        escrow-creation-block: block-height,
+        auto-release-block: (if rush-delivery (some (+ block-height u1440)) none)
+      }
+    )
+    
+    ;; Initialize application tracking
+    (map-set service-application-count service-id u0)
+    (map-set ai-suggestion-status service-id
+      {
+        suggestions-requested: request-ai-suggestions,
+        suggestions-generated: false,
+        suggestion-count: u0
+      }
+    )
+    
+    ;; Update client profile
+    (let ((profile-updated (update-client-profile payment-amount)))
+      (var-set next-service-id (+ service-id u1))
+      
+      (print {
+        type: "service-request-created",
+        service-id: service-id,
+        client: tx-sender,
+        skill-category: skill-category,
+        payment-amount: payment-amount,
+        ai-suggestions-requested: request-ai-suggestions,
+        application-deadline: application-deadline,
+        block: block-height
+      })
+      
+      (ok service-id)
+    )
+  )
+)
+
+;; AI ORACLE CREATES SUGGESTION (individual provider)
+(define-public (create-ai-suggested-application
+  (service-id uint)
+  (suggested-provider principal)
+  (estimated-timeline uint)
+)
+  (let 
+    (
+      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
+      (provider-profile (unwrap! (map-get? skill-provider-profiles suggested-provider) (err u105)))
+      (current-app-count (default-to u0 (map-get? service-application-count service-id)))
+      (ai-status (unwrap! (map-get? ai-suggestion-status service-id) (err u101)))
+    )
+    ;; Input validation
+    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
+    (asserts! (is-eq (get current-status service-info) u0) (err u102))
+    (asserts! (< block-height (get application-deadline service-info)) (err u106))
+    (asserts! (is-eq (get verification-status provider-profile) u1) (err u105))
+    (asserts! (get suggestions-requested ai-status) (err u102))
+    (asserts! (< current-app-count MAX-APPLICATIONS-PER-SERVICE) (err u117))
+    (asserts! (not (is-eq suggested-provider (get client-address service-info))) (err u100))
+    (asserts! (is-none (map-get? service-applications { service-id: service-id, provider: suggested-provider })) (err u104))
+    
+    ;; Create AI suggested application
+    (map-set service-applications 
+      { service-id: service-id, provider: suggested-provider }
+      {
+        application-message: "AI suggested provider based on skills, ratings, and availability",
+        proposed-timeline: estimated-timeline,
+        proposed-price: none,
+        portfolio-links: (list "" "" "" "" ""),
+        application-timestamp: block-height,
+        application-status: u0,
+        estimated-delivery: (+ block-height estimated-timeline),
+        provider-questions: none,
+        is-ai-suggested: true
+      }
+    )
+    
+    ;; Update counters
+    (map-set service-application-count service-id (+ current-app-count u1))
+    (map-set ai-suggestion-status service-id
+      (merge ai-status {
+        suggestion-count: (+ (get suggestion-count ai-status) u1)
+      })
+    )
+    
+    ;; Update provider stats
+    (map-set skill-provider-profiles suggested-provider
+      (merge provider-profile {
+        active-applications: (+ (get active-applications provider-profile) u1)
+      })
+    )
+    
+    (print {
+      type: "ai-suggested-application-created",
+      service-id: service-id,
+      suggested-provider: suggested-provider,
+      estimated-timeline: estimated-timeline,
+      total-applications: (+ current-app-count u1),
+      block: block-height
+    })
+    
+    (ok true)
+  )
+)
+
+;; MARK AI SUGGESTIONS AS COMPLETE
+(define-public (complete-ai-suggestions (service-id uint))
+  (let ((ai-status (unwrap! (map-get? ai-suggestion-status service-id) (err u101))))
+    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
+    (asserts! (get suggestions-requested ai-status) (err u102))
+    (asserts! (not (get suggestions-generated ai-status)) (err u104))
+    
+    ;; Mark suggestions as complete
+    (map-set ai-suggestion-status service-id
+      (merge ai-status { suggestions-generated: true })
+    )
+    
+    ;; Update service
+    (let ((service-info (unwrap! (map-get? service-requests service-id) (err u101))))
+      (map-set service-requests service-id
+        (merge service-info { ai-suggestions-generated: true })
+      )
+    )
+    
+    (print {
+      type: "ai-suggestions-completed",
+      service-id: service-id,
+      suggestion-count: (get suggestion-count ai-status),
+      block: block-height
+    })
+    
+    (ok true)
+  )
+)
+
+;; PROVIDER APPLIES TO SERVICE
+(define-public (apply-to-service
+  (service-id uint)
+  (application-message (string-ascii 300))
+  (proposed-timeline uint)
+  (portfolio-links (list 5 (string-ascii 200)))
+  (proposed-price (optional uint)) ;; in microSTX
+  (provider-questions (optional (string-ascii 200)))
+)
+  (let 
+    (
+      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
+      (provider-profile (unwrap! (map-get? skill-provider-profiles tx-sender) (err u105)))
+      (current-app-count (default-to u0 (map-get? service-application-count service-id)))
+      (provider-apps (default-to (list) (map-get? provider-applications tx-sender)))
+    )
+    ;; Input validation
+    (asserts! (is-eq (get current-status service-info) u0) (err u102))
+    (asserts! (< block-height (get application-deadline service-info)) (err u106))
+    (asserts! (is-eq (get verification-status provider-profile) u1) (err u105))
+    (asserts! (not (is-eq tx-sender (get client-address service-info))) (err u100))
+    (asserts! (is-none (map-get? service-applications { service-id: service-id, provider: tx-sender })) (err u104))
+    (asserts! (is-valid-string application-message u10 u300) (err u117))
+    (asserts! (and (> proposed-timeline u0) (<= proposed-timeline u1440)) (err u117))
+    (asserts! (< current-app-count MAX-APPLICATIONS-PER-SERVICE) (err u117))
+    (asserts! (< (get active-applications provider-profile) u5) (err u117))
+    
+    ;; Validate proposed price if provided
+    (match proposed-price
+      some-price (asserts! (and (>= some-price (/ (get payment-amount service-info) u2)) 
+                               (<= some-price (* (get payment-amount service-info) u2))) (err u110))
+      true
+    )
+    
+    ;; Create application
+    (map-set service-applications 
+      { service-id: service-id, provider: tx-sender }
+      {
+        application-message: application-message,
+        proposed-timeline: proposed-timeline,
+        proposed-price: proposed-price,
+        portfolio-links: portfolio-links,
+        application-timestamp: block-height,
+        application-status: u0,
+        estimated-delivery: (+ block-height proposed-timeline),
+        provider-questions: provider-questions,
+        is-ai-suggested: false
+      }
+    )
+    
+    ;; Update counters
+    (map-set service-application-count service-id (+ current-app-count u1))
+    (map-set provider-applications tx-sender 
+      (unwrap! (as-max-len? (append provider-apps service-id) u20) (err u117)))
+    
+    ;; Update provider stats
+    (map-set skill-provider-profiles tx-sender
+      (merge provider-profile {
+        active-applications: (+ (get active-applications provider-profile) u1)
+      })
+    )
+    
+    (print {
+      type: "provider-applied",
+      service-id: service-id,
+      provider: tx-sender,
+      timeline: proposed-timeline,
+      proposed-price: proposed-price,
+      application-count: (+ current-app-count u1),
+      block: block-height
+    })
+    
+    (ok true)
+  )
+)
+
+;; CLIENT SELECTS PROVIDER
+(define-public (select-provider
+  (service-id uint)
+  (chosen-provider principal)
+  (accept-proposed-price bool)
+)
+  (let 
+    (
+      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
+      (application (unwrap! (map-get? service-applications 
+        { service-id: service-id, provider: chosen-provider }) (err u101)))
+      (escrow-info (unwrap! (map-get? payment-escrow-system service-id) (err u101)))
+    )
+    ;; Input validation
+    (asserts! (is-eq tx-sender (get client-address service-info)) (err u100))
+    (asserts! (is-eq (get current-status service-info) u0) (err u102))
+    (asserts! (is-eq (get application-status application) u0) (err u102))
+    
+    ;; Handle price adjustment
+    (let ((final-payout-amount 
+      (if (and accept-proposed-price (is-some (get proposed-price application)))
+        (unwrap-panic (get proposed-price application))
+        (get payment-amount service-info))))
+      
+      ;; Update service with chosen provider
+      (map-set service-requests service-id
+        (merge service-info {
+          provider-address: (some chosen-provider),
+          current-status: u1,
+          payment-amount: final-payout-amount
+        })
+      )
+      
+      ;; Update escrow if needed
+      (if (not (is-eq final-payout-amount (get payment-amount service-info)))
+        (map-set payment-escrow-system service-id
+          (merge escrow-info {
+            provider-payout-amount: final-payout-amount
+          }))
+        true
+      )
+      
+      ;; Update chosen application
+      (map-set service-applications 
+        { service-id: service-id, provider: chosen-provider }
+        (merge application { application-status: u1 }))
+      
+      ;; Update provider stats
+      (let ((provider-profile (unwrap! (map-get? skill-provider-profiles chosen-provider) (err u105))))
+        (map-set skill-provider-profiles chosen-provider
+          (merge provider-profile {
+            active-applications: (- (get active-applications provider-profile) u1)
+          })
+        )
+      )
+      
+      (print {
+        type: "provider-selected",
+        service-id: service-id,
+        chosen-provider: chosen-provider,
+        final-price: final-payout-amount,
+        was-ai-suggested: (get is-ai-suggested application),
+        block: block-height
+      })
+      
+      (ok true)
+    )
+  )
+)
+
+;; WITHDRAW APPLICATION
+(define-public (withdraw-application (service-id uint))
+  (let ((application (unwrap! (map-get? service-applications 
+    { service-id: service-id, provider: tx-sender }) (err u101))))
+    
+    (asserts! (is-eq (get application-status application) u0) (err u102))
+    
+    (map-set service-applications 
+      { service-id: service-id, provider: tx-sender }
+      (merge application { application-status: u3 }))
+    
+    ;; Update provider stats
+    (let ((provider-profile (unwrap! (map-get? skill-provider-profiles tx-sender) (err u105))))
+      (map-set skill-provider-profiles tx-sender
+        (merge provider-profile {
+          active-applications: (- (get active-applications provider-profile) u1)
+        })
+      )
+    )
+    
+    (ok true)
+  )
+)
+
+;; START SERVICE SESSION
+(define-public (start-service-session
+  (service-id uint)
+  (video-session-url (string-ascii 200))
+)
+  (let 
+    (
+      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
+      (provider (unwrap! (get provider-address service-info) (err u101)))
+    )
+    (asserts! (is-valid-string video-session-url u1 u200) (err u117))
+    (asserts! (or (is-eq tx-sender (get client-address service-info)) (is-eq tx-sender provider)) (err u100))
+    (asserts! (is-eq (get current-status service-info) u1) (err u102))
+    
+    (map-set service-requests service-id
+      (merge service-info {
+        current-status: u2,
+        video-session-url: (some video-session-url)
+      })
+    )
+    
+    (ok true)
+  )
+)
+
+;; COMPLETE SERVICE
+(define-public (complete-service-delivery
+  (service-id uint)
+  (completion-evidence (string-ascii 200))
+)
+  (let 
+    (
+      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
+      (provider (unwrap! (get provider-address service-info) (err u101)))
+    )
+    (asserts! (is-valid-string completion-evidence u1 u200) (err u117))
+    (asserts! (is-eq tx-sender provider) (err u100))
+    (asserts! (is-eq (get current-status service-info) u2) (err u102))
+    
+    (map-set service-requests service-id
+      (merge service-info {
+        current-status: u3,
+        completion-evidence: (some completion-evidence)
+      })
+    )
+    
+    ;; Release payment and update stats
+    (try! (release-stx-payment service-id provider))
+    (let ((stats-updated (update-provider-stats provider service-id)))
+      (ok true)
+    )
+  )
+)
+
+;; RATE PROVIDER
+(define-public (rate-service-provider (service-id uint) (rating uint))
+  (let 
+    (
+      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
+      (provider (unwrap! (get provider-address service-info) (err u101)))
+    )
+    (asserts! (is-valid-rating rating) (err u107))
+    (asserts! (is-eq tx-sender (get client-address service-info)) (err u100))
+    (asserts! (is-eq (get current-status service-info) u3) (err u102))
+    (asserts! (is-none (get client-rating service-info)) (err u104))
+    
+    (map-set service-requests service-id
+      (merge service-info { client-rating: (some rating) })
+    )
+    
+    (let ((rating-updated (update-provider-rating provider rating)))
+      (ok true)
+    )
+  )
+)
+
+;; HELPER FUNCTIONS
+(define-private (release-stx-payment (service-id uint) (provider principal))
+  (let ((escrow-info (unwrap! (map-get? payment-escrow-system service-id) (err u101))))
+    (try! (as-contract (stx-transfer? 
+      (get provider-payout-amount escrow-info) tx-sender provider)))
+    (try! (as-contract (stx-transfer? 
+      (get platform-fee-amount escrow-info) tx-sender (var-get platform-treasury))))
+    
+    (map-set payment-escrow-system service-id
+      (merge escrow-info { funds-locked-status: false })
+    )
+    (ok true)
+  )
+)
+
+(define-private (update-client-profile (amount uint))
+  (let ((current-profile (default-to 
+    {
+      total-services-requested: u0,
+      total-amount-spent: u0,
+      average-provider-rating: u0,
+      payment-defaults: u0,
+      account-creation-block: block-height,
+      kyc-status: false
+    }
+    (map-get? client-profiles tx-sender))))
+    
+    (map-set client-profiles tx-sender
+      (merge current-profile {
+        total-services-requested: (+ (get total-services-requested current-profile) u1),
+        total-amount-spent: (+ (get total-amount-spent current-profile) amount)
+      })
+    )
+    (ok true)
+  )
+)
+
+(define-private (update-provider-stats (provider principal) (service-id uint))
+  (let ((current-profile (map-get? skill-provider-profiles provider)))
+    (match current-profile
+      profile
+      (let ((escrow-info (map-get? payment-escrow-system service-id)))
+        (match escrow-info
+          escrow
+          (begin
+            (map-set skill-provider-profiles provider
+              (merge profile {
+                total-services-completed: (+ (get total-services-completed profile) u1),
+                total-earnings: (+ (get total-earnings profile) (get provider-payout-amount escrow))
+              })
+            )
+            (ok true)
+          )
+          (ok false)
+        )
+      )
+      (ok false)
+    )
+  )
+)
+
+(define-private (update-provider-rating (provider principal) (new-rating uint))
+  (let ((current-profile (map-get? skill-provider-profiles provider)))
+    (match current-profile
+      profile
+      (let 
+        (
+          (total-rating-points (* (get current-rating profile) (get rating-count profile)))
+          (new-rating-count (+ (get rating-count profile) u1))
+          (new-average-rating (/ (+ total-rating-points new-rating) new-rating-count))
+        )
+        (map-set skill-provider-profiles provider
+          (merge profile {
+            current-rating: new-average-rating,
+            rating-count: new-rating-count
+          })
+        )
+        (ok true)
+      )
+      (ok false)
+    )
+  )
+)
+
 (define-private (is-valid-rating (rating uint))
   (and (>= rating u10) (<= rating u50))
 )
