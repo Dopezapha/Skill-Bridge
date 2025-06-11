@@ -134,6 +134,42 @@
   )
 )
 
+(define-private (is-valid-rating (rating uint))
+  (and (>= rating u10) (<= rating u50))
+)
+
+(define-private (calculate-percentage (amount uint) (percentage uint))
+  (/ (* amount percentage) BASIS-POINTS)
+)
+
+;; STX balance functions
+(define-read-only (check-user-stx-balance (user principal))
+  (stx-get-balance user)
+)
+
+(define-read-only (validate-user-balance-for-service (user principal) (service-cost uint))
+  (let 
+    (
+      (platform-fee (calculate-percentage service-cost PLATFORM-FEE-RATE))
+      (total-needed (+ service-cost platform-fee))
+      (user-balance (stx-get-balance user))
+    )
+    (ok {
+      sufficient: (>= user-balance total-needed),
+      user-balance: user-balance,
+      service-cost: service-cost,
+      platform-fee: platform-fee,
+      total-needed: total-needed,
+      remaining-after: (if (>= user-balance total-needed) 
+                         (some (- user-balance total-needed)) 
+                         none),
+      shortfall: (if (< user-balance total-needed) 
+                   (some (- total-needed user-balance)) 
+                   none)
+    })
+  )
+)
+
 ;; MAIN SERVICE CREATION
 (define-public (create-service-request
   (skill-category (string-ascii 50))
@@ -656,38 +692,292 @@
   )
 )
 
-(define-private (is-valid-rating (rating uint))
-  (and (>= rating u10) (<= rating u50))
+;; PROVIDER PROFILE MANAGEMENT
+(define-public (create-provider-profile (initial-skills (list 15 (string-ascii 50))))
+  (let ((skills-len (len initial-skills)))
+    (asserts! (and (> skills-len u0) (<= skills-len u15)) (err u117))
+    (asserts! (is-none (map-get? skill-provider-profiles tx-sender)) (err u104))
+    
+    (map-set skill-provider-profiles tx-sender
+      {
+        verified-skills: initial-skills,
+        verification-status: u0,
+        verification-timestamp: u0,
+        total-services-completed: u0,
+        total-earnings: u0,
+        current-rating: u0,
+        rating-count: u0,
+        profile-creation-block: block-height,
+        kyc-verified: false,
+        response-rate: u100,
+        avg-delivery-time: u360,
+        active-applications: u0
+      }
+    )
+    
+    (ok true)
+  )
 )
 
-(define-private (calculate-percentage (amount uint) (percentage uint))
-  (/ (* amount percentage) BASIS-POINTS)
+(define-public (update-provider-verification-status
+  (provider principal)
+  (approved bool)
+)
+  (let ((current-profile (unwrap! (map-get? skill-provider-profiles provider) (err u101))))
+    (asserts! (not (is-eq provider tx-sender)) (err u117))
+    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
+    
+    (map-set skill-provider-profiles provider
+      (merge current-profile {
+        verification-status: (if approved u1 u2),
+        verification-timestamp: block-height
+      })
+    )
+    
+    (ok approved)
+  )
 )
 
-;; STX balance functions
-(define-read-only (check-user-stx-balance (user principal))
-  (stx-get-balance user)
+;; DISPUTE RESOLUTION
+(define-public (initiate-dispute (service-id uint) (reason (string-ascii 200)))
+  (let ((service-info (unwrap! (map-get? service-requests service-id) (err u101))))
+    (asserts! (is-valid-string reason u1 u200) (err u117))
+    (asserts! (or 
+      (is-eq tx-sender (get client-address service-info))
+      (is-eq tx-sender (unwrap-panic (get provider-address service-info)))
+    ) (err u100))
+    (asserts! (is-eq (get current-status service-info) u2) (err u102))
+    
+    (map-set service-requests service-id
+      (merge service-info { current-status: u4 })
+    )
+    
+    (ok true)
+  )
 )
 
-(define-read-only (validate-user-balance-for-service (user principal) (service-cost uint))
+(define-public (resolve-dispute
+  (service-id uint)
+  (favor-client bool)
+  (refund-percentage uint)
+)
   (let 
     (
-      (platform-fee (calculate-percentage service-cost PLATFORM-FEE-RATE))
-      (total-needed (+ service-cost platform-fee))
-      (user-balance (stx-get-balance user))
+      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
+      (escrow-info (unwrap! (map-get? payment-escrow-system service-id) (err u101)))
     )
-    (ok {
-      sufficient: (>= user-balance total-needed),
-      user-balance: user-balance,
-      service-cost: service-cost,
-      platform-fee: platform-fee,
-      total-needed: total-needed,
-      remaining-after: (if (>= user-balance total-needed) 
-                         (some (- user-balance total-needed)) 
-                         none),
-      shortfall: (if (< user-balance total-needed) 
-                   (some (- total-needed user-balance)) 
-                   none)
-    })
+    (asserts! (<= refund-percentage u100) (err u110))
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
+    (asserts! (is-eq (get current-status service-info) u4) (err u102))
+    
+    (let 
+      (
+        (total-amount (get total-escrowed-amount escrow-info))
+        (refund-amount (/ (* total-amount refund-percentage) u100))
+        (provider-amount (- total-amount refund-amount))
+      )
+      (if favor-client
+        (begin
+          (try! (as-contract (stx-transfer? 
+            refund-amount tx-sender (get client-address service-info))))
+          (if (> provider-amount u0)
+            (try! (as-contract (stx-transfer? 
+              provider-amount tx-sender (unwrap-panic (get provider-address service-info)))))
+            true
+          )
+        )
+        (try! (as-contract (stx-transfer? 
+          (get provider-payout-amount escrow-info) tx-sender (unwrap-panic (get provider-address service-info)))))
+      )
+      
+      (map-set service-requests service-id
+        (merge service-info { current-status: u3 })
+      )
+      
+      (map-set payment-escrow-system service-id
+        (merge escrow-info { funds-locked-status: false })
+      )
+      
+      (ok true)
+    )
+  )
+)
+
+;; READ-ONLY FUNCTIONS
+(define-read-only (get-service-request (service-id uint))
+  (map-get? service-requests service-id)
+)
+
+(define-read-only (get-service-with-applications (service-id uint))
+  (let ((service (map-get? service-requests service-id)))
+    (match service
+      service-data
+      (ok {
+        service: service-data,
+        application-count: (default-to u0 (map-get? service-application-count service-id)),
+        ai-status: (map-get? ai-suggestion-status service-id),
+        applications-open: (< block-height (get application-deadline service-data)),
+        selection-required: (get client-selection-required service-data)
+      })
+      (err u101)
+    )
+  )
+)
+
+(define-read-only (get-provider-application (service-id uint) (provider principal))
+  (map-get? service-applications { service-id: service-id, provider: provider })
+)
+
+(define-read-only (get-application-count (service-id uint))
+  (default-to u0 (map-get? service-application-count service-id))
+)
+
+(define-read-only (get-provider-applications (provider principal))
+  (default-to (list) (map-get? provider-applications provider))
+)
+
+(define-read-only (get-skill-provider-profile (provider principal))
+  (map-get? skill-provider-profiles provider)
+)
+
+(define-read-only (get-enhanced-provider-profile (provider principal))
+  (let ((profile (map-get? skill-provider-profiles provider)))
+    (match profile
+      profile-data
+      (ok {
+        profile: profile-data,
+        active-applications: (get active-applications profile-data),
+        rating-display: (/ (get current-rating profile-data) u10),
+        experience-level: (if (< (get total-services-completed profile-data) u5)
+          "Beginner"
+          (if (< (get total-services-completed profile-data) u20)
+            "Intermediate" 
+            "Expert"))
+      })
+      (err u101)
+    )
+  )
+)
+
+(define-read-only (get-client-profile (client principal))
+  (map-get? client-profiles client)
+)
+
+(define-read-only (get-escrow-details (service-id uint))
+  (map-get? payment-escrow-system service-id)
+)
+
+(define-read-only (get-ai-suggestion-status (service-id uint))
+  (map-get? ai-suggestion-status service-id)
+)
+
+(define-read-only (get-platform-stats)
+  {
+    total-services: (- (var-get next-service-id) u1),
+    platform-active: (var-get platform-active),
+    emergency-mode: (var-get emergency-mode),
+    minimum-service-amount: (var-get minimum-service-amount),
+    platform-fee-rate: PLATFORM-FEE-RATE,
+    primary-currency: "STX",
+    selection-model: "client-choice-with-ai-suggestions",
+    native-blockchain: "Stacks",
+    payment-model: "stx-only"
+  }
+)
+
+(define-read-only (get-stx-platform-info)
+  {
+    required-token: "STX (Stacks)",
+    minimum-balance-for-jobs: (var-get minimum-service-amount),
+    platform-fee: "2.5%",
+    native-currency: true,
+    blockchain: "Stacks",
+    benefits: (list 
+      "Native STX tokens - no wrapping required"
+      "Direct wallet integration"
+      "Fast transaction settlement"
+      "Low fees compared to Ethereum"
+      "Built-in escrow protection"
+    )
+  }
+)
+
+;; ADMIN FUNCTIONS
+(define-public (set-oracle-contract (oracle-addr principal))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
+    (var-set oracle-contract oracle-addr)
+    (ok oracle-addr)
+  )
+)
+
+(define-public (set-platform-active (active bool))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
+    (var-set platform-active active)
+    (ok active)
+  )
+)
+
+(define-public (set-emergency-mode (emergency bool))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
+    (var-set emergency-mode emergency)
+    (ok emergency)
+  )
+)
+
+(define-public (set-minimum-service-amount (amount uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
+    (asserts! (> amount u0) (err u110))
+    (asserts! (<= amount u100000000) (err u110))
+    (var-set minimum-service-amount amount)
+    (ok amount)
+  )
+)
+
+(define-public (set-treasury-address (treasury principal))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
+    (var-set platform-treasury treasury)
+    (ok treasury)
+  )
+)
+
+;; EMERGENCY FUNCTIONS
+(define-public (emergency-service-cancel (service-id uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
+    (asserts! (and (> service-id u0) (< service-id (var-get next-service-id))) (err u117))
+    (asserts! (var-get emergency-mode) (err u100))
+    
+    (let 
+      (
+        (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
+        (escrow-info (unwrap! (map-get? payment-escrow-system service-id) (err u101)))
+      )
+      (try! (as-contract (stx-transfer? 
+        (get total-escrowed-amount escrow-info) tx-sender (get client-address service-info))))
+      
+      (map-set service-requests service-id
+        (merge service-info { current-status: u5 })
+      )
+      
+      (map-set payment-escrow-system service-id
+        (merge escrow-info { funds-locked-status: false })
+      )
+      
+      (ok true)
+    )
+  )
+)
+
+(define-public (emergency-pause)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u118))
+    (var-set platform-active false)
+    (var-set emergency-mode true)
+    (ok true)
   )
 )
