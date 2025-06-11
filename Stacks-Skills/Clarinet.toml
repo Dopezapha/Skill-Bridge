@@ -20,6 +20,11 @@ path = 'contracts/skillflow-main.clar'
 clarity_version = 2
 epoch = 2.5
 
+[contracts.skills-token]
+path = 'contracts/skills-token.clar'
+clarity_version = 2
+epoch = 2.5
+
 [contracts.utils]
 path = 'contracts/utils.clar'
 clarity_version = 2

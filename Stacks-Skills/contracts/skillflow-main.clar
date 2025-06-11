@@ -1,7 +1,16 @@
 ;; skillflow-main.clar
 ;; SkillFlow Main Contract
 ;; Provider Selection System - AI suggests, client chooses
-;; STX-only payment system
+;; STX-only payment system with SKILL token application fees
+
+;; Define trait for SKILL token contract
+(define-trait skill-token-trait
+  (
+    (spend-for-application (principal uint) (response bool uint))
+    (can-afford-application (principal) (response bool uint))
+    (get-balance (principal) (response uint uint))
+  )
+)
 
 ;; Constants
 (define-constant CONTRACT-OWNER tx-sender)
@@ -19,6 +28,9 @@
 (define-data-var next-service-id uint u1)
 (define-data-var platform-treasury principal tx-sender)
 (define-data-var oracle-contract principal tx-sender)
+
+;; SKILL Token contract reference
+(define-data-var skill-token-contract principal tx-sender)
 
 ;; Enhanced data maps
 (define-map skill-provider-profiles
@@ -200,6 +212,28 @@
 ;; Helper function to get the maximum of two values
 (define-private (get-max (a uint) (b uint))
   (if (> a b) a b)
+)
+
+;; Helper function to check and spend SKILL tokens
+(define-private (spend-skill-tokens-for-application (applicant principal))
+  (let ((skill-contract (var-get skill-token-contract)))
+    (if (is-eq skill-contract tx-sender)
+      ;; If skill token contract not set, allow free applications (for testing/migration)
+      (ok true)
+      ;; Call the SKILL token contract by name (for development)
+      (begin
+        (asserts! (is-valid-principal skill-contract) (err u137))
+        ;; Reference the contract by its filename (without .clar extension)
+        (unwrap! (contract-call? 
+          .skills-token 
+          spend-for-application 
+          applicant 
+          u1000000) ;; 1 SKILL token
+          (err u136))
+        (ok true)
+      )
+    )
+  )
 )
 
 ;; Enhanced validation functions
@@ -539,7 +573,7 @@
   )
 )
 
-;; PROVIDER APPLIES TO SERVICE
+;; PROVIDER APPLIES TO SERVICE WITH SKILL TOKEN FEE
 (define-public (apply-to-service
   (service-id uint)
   (application-message (string-ascii 300))
@@ -580,6 +614,9 @@
       true
     )
     
+    ;; SPEND SKILL TOKENS FOR APPLICATION FEE
+    (try! (spend-skill-tokens-for-application tx-sender))
+    
     ;; Create application with validated inputs
     (map-set service-applications 
       { service-id: service-id, provider: tx-sender }
@@ -609,12 +646,13 @@
     )
     
     (print {
-      type: "provider-applied",
+      type: "provider-applied-with-skill-fee",
       service-id: service-id,
       provider: tx-sender,
       timeline: proposed-timeline,
       proposed-price: proposed-price,
       application-count: (+ current-app-count u1),
+      skill-tokens-spent: u1000000, ;; 1 SKILL token
       block: block-height
     })
     
@@ -1049,7 +1087,7 @@
   )
 )
 
-;; NEW PROVIDER ONBOARDING SYSTEM (SIMPLIFIED)
+;; NEW PROVIDER ONBOARDING SYSTEM
 (define-public (start-new-provider-onboarding
   (skills-to-verify (list 5 (string-ascii 50)))
   (portfolio-links (list 5 (string-ascii 200)))
@@ -1249,6 +1287,75 @@
   )
 )
 
+;; SKILL TOKEN INTEGRATION FUNCTIONS
+(define-public (check-application-eligibility (provider principal) (service-id uint))
+  (let 
+    (
+      (service-info (map-get? service-requests service-id))
+      (provider-profile (map-get? skill-provider-profiles provider))
+      (skill-contract (var-get skill-token-contract))
+    )
+    (match service-info
+      service-data
+      (match provider-profile
+        profile-data
+        (ok {
+          service-exists: true,
+          service-open: (is-eq (get current-status service-data) u0),
+          application-deadline-passed: (>= block-height (get application-deadline service-data)),
+          provider-verified: (is-eq (get verification-status profile-data) u1),
+          already-applied: (is-some (map-get? service-applications { service-id: service-id, provider: provider })),
+          is-service-owner: (is-eq provider (get client-address service-data)),
+          has-skill-tokens: (if (is-eq skill-contract tx-sender) 
+            true ;; Skip check if contract not set
+            (unwrap-panic (contract-call? .skills-token can-afford-application provider))),
+          application-cost: u1000000, ;; 1 SKILL token
+          can-apply: (and 
+            (is-eq (get current-status service-data) u0)
+            (< block-height (get application-deadline service-data))
+            (is-eq (get verification-status profile-data) u1)
+            (is-none (map-get? service-applications { service-id: service-id, provider: provider }))
+            (not (is-eq provider (get client-address service-data)))
+          )
+        })
+        (err u105)
+      )
+      (err u101)
+    )
+  )
+)
+
+(define-public (get-user-application-info (user principal))
+  (let ((skill-contract (var-get skill-token-contract)))
+    (ok {
+      skill-token-balance: (if (is-eq skill-contract tx-sender)
+        u0 ;; Return 0 if contract not set
+        (unwrap-panic (contract-call? .skills-token get-balance user))),
+      applications-affordable: (if (is-eq skill-contract tx-sender)
+        u999 ;; Return high number if contract not set
+        (/ (unwrap-panic (contract-call? .skills-token get-balance user)) u1000000)),
+      application-cost-skill: u1000000, ;; 1 SKILL token
+      application-cost-stx: u100000, ;; 0.1 STX to buy 1 SKILL
+      can-afford-application: (if (is-eq skill-contract tx-sender)
+        true ;; Allow if contract not set
+        (unwrap-panic (contract-call? .skills-token can-afford-application user))),
+      stx-balance: (stx-get-balance user),
+      provider-profile: (map-get? skill-provider-profiles user)
+    })
+  )
+)
+
+(define-read-only (estimate-application-costs (num-applications uint))
+  {
+    applications: num-applications,
+    skill-tokens-needed: (* num-applications u1000000), ;; 1 SKILL per application
+    stx-cost-to-buy-tokens: (* num-applications u100000), ;; 0.1 STX per SKILL token
+    cost-per-application: "0.1 STX",
+    savings-vs-competitors: "Massive! Other platforms charge 15-20% of project value",
+    platform-advantage: "Fixed 0.1 STX fee vs percentage-based fees"
+  }
+)
+
 ;; READ-ONLY FUNCTIONS
 (define-read-only (get-service-request (service-id uint))
   (map-get? service-requests service-id)
@@ -1333,11 +1440,33 @@
   }
 )
 
+(define-read-only (get-enhanced-platform-stats)
+  {
+    total-services: (- (var-get next-service-id) u1),
+    platform-active: (var-get platform-active),
+    emergency-mode: (var-get emergency-mode),
+    minimum-service-amount: (var-get minimum-service-amount),
+    platform-fee-rate: PLATFORM-FEE-RATE,
+    primary-currency: "STX",
+    application-token: "SKILL",
+    application-cost: "0.1 STX per application",
+    selection-model: "ai-predicted-success-with-skill-token-applications",
+    native-blockchain: "Stacks",
+    payment-model: "stx-escrow-with-skill-token-spam-prevention",
+    min-success-threshold: MIN-SUCCESS-PROBABILITY,
+    dynamic-pricing-enabled: true,
+    skill-token-contract: (var-get skill-token-contract),
+    competitive-advantage: "Fixed 0.1 STX application fee vs 15-20% project fees elsewhere"
+  }
+)
+
 (define-read-only (get-stx-platform-info)
   {
     required-token: "STX (Stacks)",
+    application-token: "SKILL (0.1 STX per token)",
     minimum-balance-for-jobs: (var-get minimum-service-amount),
     platform-fee: "2.5%",
+    application-fee: "0.1 STX per application",
     native-currency: true,
     blockchain: "Stacks",
     benefits: (list 
@@ -1348,11 +1477,33 @@
       "AI-predicted success matching (80%+ only)"
       "Dynamic pricing based on real competency"
       "Performance-based payment adjustments"
+      "Spam-free applications with SKILL tokens"
+      "Much cheaper than 15-20% competitor fees"
     )
   }
 )
 
 ;; ADMIN FUNCTIONS
+(define-public (set-skill-token-contract (skill-contract-addr principal))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
+    (asserts! (is-valid-principal skill-contract-addr) (err u117))
+    (var-set skill-token-contract skill-contract-addr)
+    
+    (print {
+      type: "skill-token-contract-set",
+      contract-address: skill-contract-addr,
+      block: block-height
+    })
+    
+    (ok skill-contract-addr)
+  )
+)
+
+(define-read-only (get-skill-token-contract)
+  (var-get skill-token-contract)
+)
+
 (define-public (set-oracle-contract (oracle-addr principal))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
