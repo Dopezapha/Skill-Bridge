@@ -45,7 +45,11 @@
 (define-data-var last-price-update uint u0)
 (define-data-var price-confidence uint u90)
 
-;; Local validation functions
+;; Enhanced validation functions
+(define-private (is-valid-principal (addr principal))
+  (not (is-eq addr 'ST000000000000000000002AMW42H)) ;; Not burn address
+)
+
 (define-private (is-valid-confidence (confidence uint))
   (<= confidence u100)
 )
@@ -71,6 +75,10 @@
 
 (define-private (is-valid-volatility (volatility uint))
   (<= volatility u10000)
+)
+
+(define-private (is-valid-request-id (request-id uint))
+  (and (> request-id u0) (< request-id (var-get next-verification-id)))
 )
 
 ;; STX Price feed functions
@@ -167,7 +175,8 @@
   (let ((request (unwrap! (map-get? ai-verification-requests { provider: provider, request-id: request-id }) (err u101))))
     ;; Input validation
     (asserts! (is-eq tx-sender (var-get ai-oracle-operator)) (err u100))
-    (asserts! (> request-id u0) (err u117))
+    (asserts! (is-valid-principal provider) (err u117))
+    (asserts! (is-valid-request-id request-id) (err u117))
     (asserts! (is-eq (get verification-status request) u0) (err u129)) ;; Must be pending
     (asserts! (is-valid-confidence confidence) (err u129))
     (asserts! (is-valid-review-notes review-notes) (err u117))
@@ -359,6 +368,7 @@
 (define-public (set-price-oracle-operator (new-operator principal))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u118))
+    (asserts! (is-valid-principal new-operator) (err u117))
     (var-set price-oracle-operator new-operator)
     (ok new-operator)
   )
@@ -367,6 +377,7 @@
 (define-public (set-ai-oracle-operator (new-operator principal))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u118))
+    (asserts! (is-valid-principal new-operator) (err u117))
     (var-set ai-oracle-operator new-operator)
     (ok new-operator)
   )
@@ -375,6 +386,7 @@
 (define-public (authorize-price-feeder (feeder principal) (authorized bool))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u118))
+    (asserts! (is-valid-principal feeder) (err u117))
     (map-set authorized-price-feeders feeder authorized)
     (ok authorized)
   )

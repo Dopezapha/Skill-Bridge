@@ -1,8 +1,8 @@
 ;; constants.clar
 ;; SkillFlow Platform Constants
-;; Shared constants across all SkillFlow contracts
+;; STX-only payment system with AI predictions and new provider opportunities
 
-;; Contract deployer (will be set to actual deployer address)
+;; Contract deployer
 (define-constant CONTRACT-DEPLOYER tx-sender)
 
 ;; Platform configuration
@@ -26,7 +26,6 @@
 (define-constant ERR-PAUSED (err u116))
 (define-constant ERR-INVALID-INPUT (err u117))
 (define-constant ERR-OWNER-ONLY (err u118))
-(define-constant ERR-NOT-TOKEN-OWNER (err u119))
 (define-constant ERR-INSUFFICIENT-BALANCE (err u120))
 (define-constant ERR-TRANSFER-FAILED (err u121))
 (define-constant ERR-INVALID-RECIPIENT (err u124))
@@ -34,6 +33,11 @@
 (define-constant ERR-INVALID-CONFIDENCE (err u129))
 (define-constant ERR-STALE-PRICE (err u130))
 (define-constant ERR-INVALID-PRICE (err u131))
+;; NEW ERROR CODES FOR ADVANCED FEATURES
+(define-constant ERR-SUCCESS-THRESHOLD-NOT-MET (err u132))
+(define-constant ERR-EXPERIENCED-PROVIDER-QUOTA-FULL (err u133))
+(define-constant ERR-NOT-NEW-PROVIDER (err u134))
+(define-constant ERR-NEW-PROVIDER-QUOTA-FULL (err u135))
 
 ;; Service status constants
 (define-constant SERVICE-STATUS-OPEN u0)
@@ -65,6 +69,25 @@
 (define-constant MIN-STX-AMOUNT u1000000) ;; 1 STX minimum
 (define-constant MAX-STX-AMOUNT u100000000000) ;; 100K STX maximum
 
+;; SUCCESS PREDICTION CONSTANTS
+(define-constant MIN-SUCCESS-PROBABILITY u80) ;; 80% minimum for experienced
+(define-constant NEW-PROVIDER-SUCCESS-THRESHOLD u70) ;; 70% for new providers
+(define-constant DEFAULT-NEW-PROVIDER-SKILL-SCORE u75) ;; Default skill score for new providers
+
+;; NEW PROVIDER SYSTEM CONSTANTS
+(define-constant NEW-PROVIDER-TRIAL-PROJECTS u3) ;; First 3 projects are trial
+(define-constant NEW-PROVIDER-QUOTA-PERCENTAGE u30) ;; 30% of suggestions must be new providers
+(define-constant MIN-NEW-PROVIDER-SUGGESTIONS u1) ;; At least 1 new provider per service
+(define-constant MAX-TOTAL-SUGGESTIONS u5) ;; Max suggestions per service
+(define-constant MAX-SKILL-VERIFICATION_BOOST u25) ;; Max boost from optional verification
+
+;; DYNAMIC PRICING CONSTANTS
+(define-constant MAX-COMPETENCY-BONUS u20) ;; Max 20% bonus for overperformance
+(define-constant MAX-COMPETENCY-PENALTY u30) ;; Max 30% penalty for underperformance
+(define-constant MIN-PRICE-ADJUSTMENT-FACTOR u5000) ;; Min 50% of original price
+(define-constant MAX-PRICE-ADJUSTMENT-FACTOR u15000) ;; Max 150% of original price
+(define-constant SIGNIFICANT-PRICE_CHANGE_THRESHOLD u1000) ;; 10% change triggers update
+
 ;; Public functions to access constants
 (define-read-only (get-platform-fee-rate) PLATFORM-FEE-RATE)
 (define-read-only (get-basis-points) BASIS-POINTS)
@@ -85,7 +108,6 @@
 (define-read-only (err-paused) ERR-PAUSED)
 (define-read-only (err-invalid-input) ERR-INVALID-INPUT)
 (define-read-only (err-owner-only) ERR-OWNER-ONLY)
-(define-read-only (err-not-token-owner) ERR-NOT-TOKEN-OWNER)
 (define-read-only (err-insufficient-balance) ERR-INSUFFICIENT-BALANCE)
 (define-read-only (err-transfer-failed) ERR-TRANSFER-FAILED)
 (define-read-only (err-invalid-recipient) ERR-INVALID-RECIPIENT)
@@ -93,6 +115,11 @@
 (define-read-only (err-invalid-confidence) ERR-INVALID-CONFIDENCE)
 (define-read-only (err-stale-price) ERR-STALE-PRICE)
 (define-read-only (err-invalid-price) ERR-INVALID-PRICE)
+;; New error getters
+(define-read-only (err-success-threshold-not-met) ERR-SUCCESS-THRESHOLD-NOT-MET)
+(define-read-only (err-experienced-provider-quota-full) ERR-EXPERIENCED-PROVIDER-QUOTA-FULL)
+(define-read-only (err-not-new-provider) ERR-NOT-NEW-PROVIDER)
+(define-read-only (err-new-provider-quota-full) ERR-NEW-PROVIDER-QUOTA-FULL)
 
 ;; Status constants as public read-only functions
 (define-read-only (get-service-status-open) SERVICE-STATUS-OPEN)
@@ -115,6 +142,13 @@
 (define-read-only (get-min-stx-amount) MIN-STX-AMOUNT)
 (define-read-only (get-max-stx-amount) MAX-STX-AMOUNT)
 
+;; New feature getters
+(define-read-only (get-min-success-probability) MIN-SUCCESS-PROBABILITY)
+(define-read-only (get-new-provider-success-threshold) NEW-PROVIDER-SUCCESS-THRESHOLD)
+(define-read-only (get-new-provider-quota-percentage) NEW-PROVIDER-QUOTA-PERCENTAGE)
+(define-read-only (get-max-total-suggestions) MAX-TOTAL-SUGGESTIONS)
+(define-read-only (get-new-provider-trial-projects) NEW-PROVIDER-TRIAL-PROJECTS)
+
 ;; Platform information
 (define-read-only (get-platform-info)
   {
@@ -123,6 +157,21 @@
     min-service-amount: MIN-STX-AMOUNT,
     native-currency: true,
     blockchain: "Stacks",
-    token-standard: "Native STX"
+    payment-model: "stx-escrow-with-dynamic-pricing",
+    ai-features: (list
+      "Success prediction (80%+ threshold)"
+      "Dynamic competency-based pricing"
+      "New provider opportunities (30% quota)"
+      "Real-time skill verification"
+    ),
+    success-thresholds: {
+      experienced-providers: MIN-SUCCESS-PROBABILITY,
+      new-providers: NEW-PROVIDER-SUCCESS-THRESHOLD
+    },
+    quota-system: {
+      new-provider-percentage: NEW-PROVIDER-QUOTA-PERCENTAGE,
+      max-suggestions: MAX-TOTAL-SUGGESTIONS,
+      trial-projects: NEW-PROVIDER-TRIAL-PROJECTS
+    }
   }
 )

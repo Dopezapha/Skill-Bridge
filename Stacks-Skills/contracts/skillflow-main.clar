@@ -1,7 +1,7 @@
 ;; skillflow-main.clar
 ;; SkillFlow Main Contract
 ;; Provider Selection System - AI suggests, client chooses
-;; STX as the only payment token
+;; STX-only payment system
 
 ;; Constants
 (define-constant CONTRACT-OWNER tx-sender)
@@ -98,6 +98,81 @@
   }
 )
 
+;; SUCCESS PREDICTION SYSTEM
+(define-map project-success-predictions
+  uint ;; service-id
+  {
+    success-probability: uint, ;; 0-100%
+    risk-factors: (list 10 (string-ascii 50)),
+    recommended-adjustments: (string-ascii 300),
+    prediction-timestamp: uint,
+    confidence-score: uint
+  }
+)
+
+;; DYNAMIC COMPETENCY PRICING
+(define-map competency-assessments
+  { service-id: uint, provider: principal }
+  {
+    initial-skill-score: uint, ;; 0-100
+    demonstrated-competency: uint, ;; 0-100, updated during work
+    competency-verified: bool,
+    price-adjustment-factor: uint, ;; basis points (10000 = 100%)
+    assessment-timestamp: uint,
+    verification-evidence: (optional (string-ascii 200))
+  }
+)
+
+;; MINIMUM SUCCESS THRESHOLD
+(define-constant MIN-SUCCESS-PROBABILITY u80) ;; 80% minimum
+(define-constant NEW-PROVIDER-SUCCESS-THRESHOLD u70) ;; 70% for new providers
+(define-constant NEW-PROVIDER-TRIAL-PROJECTS u3) ;; First 3 projects get special treatment
+
+;; NEW PROVIDER QUOTA SYSTEM
+(define-constant NEW-PROVIDER-QUOTA-PERCENTAGE u30) ;; 30% of suggestions must be new providers
+(define-constant MIN-NEW-PROVIDER-SUGGESTIONS u1) ;; At least 1 new provider per service
+(define-constant MAX-TOTAL-SUGGESTIONS u5) ;; Max suggestions per service
+
+;; SERVICE SUGGESTION TRACKING
+(define-map service-suggestion-quotas
+  uint ;; service-id
+  {
+    total-suggestions-target: uint,
+    new-provider-suggestions-target: uint,
+    experienced-provider-suggestions-target: uint,
+    new-provider-suggestions-made: uint,
+    experienced-provider-suggestions-made: uint,
+    quota-fulfilled: bool
+  }
+)
+
+;; NEW PROVIDER OPPORTUNITY SYSTEM
+(define-map new-provider-trials
+  principal
+  {
+    trial-projects-completed: uint,
+    trial-success-rate: uint,
+    skill-verification-score: uint,
+    portfolio-verification-score: uint,
+    external-verification-score: uint,
+    trial-period-active: bool,
+    trial-start-block: uint
+  }
+)
+
+;; SKILL VERIFICATION FOR NEW PROVIDERS
+(define-map skill-verification-challenges
+  { provider: principal, skill: (string-ascii 50) }
+  {
+    challenge-type: (string-ascii 100),
+    submission-hash: (optional (string-ascii 200)),
+    ai-assessment-score: (optional uint),
+    verification-status: uint, ;; 0: pending, 1: passed, 2: failed
+    completion-timestamp: (optional uint),
+    external-proof: (optional (string-ascii 300))
+  }
+)
+
 (define-map payment-escrow-system
   uint
   {
@@ -120,6 +195,68 @@
     account-creation-block: uint,
     kyc-status: bool
   }
+)
+
+;; Helper function to get the maximum of two values
+(define-private (get-max (a uint) (b uint))
+  (if (> a b) a b)
+)
+
+;; Enhanced validation functions
+(define-private (is-valid-timeline (timeline uint))
+  (and (> timeline u0) (<= timeline u1440)) ;; Max 24 hours
+)
+
+(define-private (is-valid-probability (prob uint))
+  (and (>= prob u0) (<= prob u100))
+)
+
+(define-private (is-valid-skill-score (score uint))
+  (and (>= score u0) (<= score u100))
+)
+
+(define-private (is-valid-risk-factors (factors (list 10 (string-ascii 50))))
+  (and 
+    (>= (len factors) u0)
+    (<= (len factors) u10)
+  )
+)
+
+(define-private (is-valid-adjustments (adjustments (string-ascii 300)))
+  (and 
+    (>= (len adjustments) u0)
+    (<= (len adjustments) u300)
+  )
+)
+
+(define-private (is-valid-portfolio-links (links (list 5 (string-ascii 200))))
+  (and 
+    (>= (len links) u0)
+    (<= (len links) u5)
+  )
+)
+
+(define-private (is-valid-boost-amount (amount uint))
+  (and (>= amount u1) (<= amount u25))
+)
+
+(define-private (is-valid-principal (addr principal))
+  (not (is-eq addr 'ST000000000000000000002AMW42H)) ;; Not burn address
+)
+
+;; New validation functions for optional types
+(define-private (is-valid-optional-price (price (optional uint)))
+  (match price
+    some-price (is-valid-stx-amount some-price)
+    true
+  )
+)
+
+(define-private (is-valid-optional-questions (questions (optional (string-ascii 200))))
+  (match questions
+    some-questions (is-valid-string some-questions u1 u200)
+    true
+  )
 )
 
 ;; Validation functions
@@ -265,11 +402,15 @@
   )
 )
 
-;; AI ORACLE CREATES SUGGESTION (individual provider)
-(define-public (create-ai-suggested-application
+;; AI ORACLE CREATES SUGGESTION WITH SUCCESS PREDICTION
+(define-public (create-ai-suggested-application-with-prediction
   (service-id uint)
   (suggested-provider principal)
   (estimated-timeline uint)
+  (success-probability uint)
+  (risk-factors (list 10 (string-ascii 50)))
+  (recommended-adjustments (string-ascii 300))
+  (initial-skill-score uint)
 )
   (let 
     (
@@ -288,11 +429,45 @@
     (asserts! (not (is-eq suggested-provider (get client-address service-info))) (err u100))
     (asserts! (is-none (map-get? service-applications { service-id: service-id, provider: suggested-provider })) (err u104))
     
+    ;; Validate untrusted inputs
+    (asserts! (is-valid-principal suggested-provider) (err u117))
+    (asserts! (is-valid-timeline estimated-timeline) (err u117))
+    (asserts! (is-valid-probability success-probability) (err u117))
+    (asserts! (is-valid-skill-score initial-skill-score) (err u117))
+    (asserts! (is-valid-risk-factors risk-factors) (err u117))
+    (asserts! (is-valid-adjustments recommended-adjustments) (err u117))
+    
+    ;; SUCCESS PROBABILITY FILTER - Only suggest if >80% success rate
+    (asserts! (>= success-probability MIN-SUCCESS-PROBABILITY) (err u132))
+    
+    ;; Store success prediction
+    (map-set project-success-predictions service-id
+      {
+        success-probability: success-probability,
+        risk-factors: risk-factors,
+        recommended-adjustments: recommended-adjustments,
+        prediction-timestamp: block-height,
+        confidence-score: u90
+      }
+    )
+    
+    ;; Store initial competency assessment
+    (map-set competency-assessments { service-id: service-id, provider: suggested-provider }
+      {
+        initial-skill-score: initial-skill-score,
+        demonstrated-competency: initial-skill-score, ;; Starts same as initial
+        competency-verified: false,
+        price-adjustment-factor: u10000, ;; Starts at 100% (no adjustment)
+        assessment-timestamp: block-height,
+        verification-evidence: none
+      }
+    )
+    
     ;; Create AI suggested application
     (map-set service-applications 
       { service-id: service-id, provider: suggested-provider }
       {
-        application-message: "AI suggested provider based on skills, ratings, and availability",
+        application-message: "AI suggested provider with high success probability",
         proposed-timeline: estimated-timeline,
         proposed-price: none,
         portfolio-links: (list "" "" "" "" ""),
@@ -320,9 +495,11 @@
     )
     
     (print {
-      type: "ai-suggested-application-created",
+      type: "ai-suggested-application-with-prediction",
       service-id: service-id,
       suggested-provider: suggested-provider,
+      success-probability: success-probability,
+      initial-skill-score: initial-skill-score,
       estimated-timeline: estimated-timeline,
       total-applications: (+ current-app-count u1),
       block: block-height
@@ -385,18 +562,25 @@
     (asserts! (not (is-eq tx-sender (get client-address service-info))) (err u100))
     (asserts! (is-none (map-get? service-applications { service-id: service-id, provider: tx-sender })) (err u104))
     (asserts! (is-valid-string application-message u10 u300) (err u117))
-    (asserts! (and (> proposed-timeline u0) (<= proposed-timeline u1440)) (err u117))
     (asserts! (< current-app-count MAX-APPLICATIONS-PER-SERVICE) (err u117))
     (asserts! (< (get active-applications provider-profile) u5) (err u117))
     
-    ;; Validate proposed price if provided
+    ;; Validate untrusted inputs
+    (asserts! (is-valid-timeline proposed-timeline) (err u117))
+    (asserts! (is-valid-portfolio-links portfolio-links) (err u117))
+    (asserts! (is-valid-optional-price proposed-price) (err u110))
+    (asserts! (is-valid-optional-questions provider-questions) (err u117))
+    
+    ;; Additional validation for proposed price if provided
     (match proposed-price
-      some-price (asserts! (and (>= some-price (/ (get payment-amount service-info) u2)) 
-                               (<= some-price (* (get payment-amount service-info) u2))) (err u110))
+      some-price (begin
+        (asserts! (and (>= some-price (/ (get payment-amount service-info) u2)) 
+                       (<= some-price (* (get payment-amount service-info) u2))) (err u110))
+      )
       true
     )
     
-    ;; Create application
+    ;; Create application with validated inputs
     (map-set service-applications 
       { service-id: service-id, provider: tx-sender }
       {
@@ -456,6 +640,9 @@
     (asserts! (is-eq (get current-status service-info) u0) (err u102))
     (asserts! (is-eq (get application-status application) u0) (err u102))
     
+    ;; Validate untrusted inputs
+    (asserts! (is-valid-principal chosen-provider) (err u117))
+    
     ;; Handle price adjustment
     (let ((final-payout-amount 
       (if (and accept-proposed-price (is-some (get proposed-price application)))
@@ -513,6 +700,8 @@
   (let ((application (unwrap! (map-get? service-applications 
     { service-id: service-id, provider: tx-sender }) (err u101))))
     
+    ;; Validate input
+    (asserts! (> service-id u0) (err u117))
     (asserts! (is-eq (get application-status application) u0) (err u102))
     
     (map-set service-applications 
@@ -692,7 +881,267 @@
   )
 )
 
-;; PROVIDER PROFILE MANAGEMENT
+;; INITIALIZE SERVICE SUGGESTION QUOTA
+(define-public (initialize-service-suggestion-quota (service-id uint))
+  (let 
+    (
+      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
+      (ai-status (unwrap! (map-get? ai-suggestion-status service-id) (err u101)))
+    )
+    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
+    (asserts! (get suggestions-requested ai-status) (err u102))
+    (asserts! (not (get suggestions-generated ai-status)) (err u104))
+    
+    ;; Calculate quotas: 30% new providers, 70% experienced
+    (let 
+      (
+        (total-target MAX-TOTAL-SUGGESTIONS)
+        (calculated-new-provider-target (/ (* total-target NEW-PROVIDER-QUOTA-PERCENTAGE) u100))
+        (new-provider-target (get-max calculated-new-provider-target MIN-NEW-PROVIDER-SUGGESTIONS))
+        (experienced-target (- total-target new-provider-target))
+      )
+      
+      (map-set service-suggestion-quotas service-id
+        {
+          total-suggestions-target: total-target,
+          new-provider-suggestions-target: new-provider-target,
+          experienced-provider-suggestions-target: experienced-target,
+          new-provider-suggestions-made: u0,
+          experienced-provider-suggestions-made: u0,
+          quota-fulfilled: false
+        }
+      )
+      
+      (print {
+        type: "suggestion-quota-initialized",
+        service-id: service-id,
+        new-provider-quota: new-provider-target,
+        experienced-provider-quota: experienced-target,
+        total-quota: total-target,
+        block: block-height
+      })
+      
+      (ok {
+        new-provider-slots: new-provider-target,
+        experienced-slots: experienced-target
+      })
+    )
+  )
+)
+
+;; QUOTA-AWARE AI SUGGESTION FOR EXPERIENCED PROVIDERS
+(define-public (create-experienced-provider-suggestion
+  (service-id uint)
+  (suggested-provider principal)
+  (estimated-timeline uint)
+  (success-probability uint)
+  (risk-factors (list 10 (string-ascii 50)))
+  (recommended-adjustments (string-ascii 300))
+  (initial-skill-score uint)
+)
+  (let 
+    (
+      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
+      (provider-profile (unwrap! (map-get? skill-provider-profiles suggested-provider) (err u105)))
+      (current-app-count (default-to u0 (map-get? service-application-count service-id)))
+      (ai-status (unwrap! (map-get? ai-suggestion-status service-id) (err u101)))
+      (quota-info (unwrap! (map-get? service-suggestion-quotas service-id) (err u101)))
+    )
+    ;; Input validation
+    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
+    (asserts! (is-eq (get current-status service-info) u0) (err u102))
+    (asserts! (< block-height (get application-deadline service-info)) (err u106))
+    (asserts! (is-eq (get verification-status provider-profile) u1) (err u105))
+    (asserts! (get suggestions-requested ai-status) (err u102))
+    (asserts! (< current-app-count MAX-APPLICATIONS-PER-SERVICE) (err u117))
+    (asserts! (not (is-eq suggested-provider (get client-address service-info))) (err u100))
+    (asserts! (is-none (map-get? service-applications { service-id: service-id, provider: suggested-provider })) (err u104))
+    
+    ;; Validate untrusted inputs
+    (asserts! (is-valid-principal suggested-provider) (err u117))
+    (asserts! (is-valid-timeline estimated-timeline) (err u117))
+    (asserts! (is-valid-probability success-probability) (err u117))
+    (asserts! (is-valid-skill-score initial-skill-score) (err u117))
+    (asserts! (is-valid-risk-factors risk-factors) (err u117))
+    (asserts! (is-valid-adjustments recommended-adjustments) (err u117))
+    
+    ;; CHECK EXPERIENCED PROVIDER QUOTA
+    (asserts! (< (get experienced-provider-suggestions-made quota-info) 
+                 (get experienced-provider-suggestions-target quota-info)) (err u133))
+    
+    ;; EXPERIENCED PROVIDER THRESHOLD (80%)
+    (asserts! (>= success-probability MIN-SUCCESS-PROBABILITY) (err u132))
+    
+    ;; Ensure this is NOT a new provider
+    (asserts! (is-none (map-get? new-provider-trials suggested-provider)) (err u134))
+    
+    ;; Store success prediction
+    (map-set project-success-predictions service-id
+      {
+        success-probability: success-probability,
+        risk-factors: risk-factors,
+        recommended-adjustments: recommended-adjustments,
+        prediction-timestamp: block-height,
+        confidence-score: u90
+      }
+    )
+    
+    ;; Store competency assessment
+    (map-set competency-assessments { service-id: service-id, provider: suggested-provider }
+      {
+        initial-skill-score: initial-skill-score,
+        demonstrated-competency: initial-skill-score,
+        competency-verified: false,
+        price-adjustment-factor: u10000,
+        assessment-timestamp: block-height,
+        verification-evidence: none
+      }
+    )
+    
+    ;; Create application
+    (map-set service-applications 
+      { service-id: service-id, provider: suggested-provider }
+      {
+        application-message: "EXPERIENCED PROVIDER: High success rate with proven track record",
+        proposed-timeline: estimated-timeline,
+        proposed-price: none,
+        portfolio-links: (list "" "" "" "" ""),
+        application-timestamp: block-height,
+        application-status: u0,
+        estimated-delivery: (+ block-height estimated-timeline),
+        provider-questions: none,
+        is-ai-suggested: true
+      }
+    )
+    
+    ;; Update quotas and counters
+    (map-set service-suggestion-quotas service-id
+      (merge quota-info {
+        experienced-provider-suggestions-made: (+ (get experienced-provider-suggestions-made quota-info) u1)
+      })
+    )
+    
+    (map-set service-application-count service-id (+ current-app-count u1))
+    (map-set ai-suggestion-status service-id
+      (merge ai-status {
+        suggestion-count: (+ (get suggestion-count ai-status) u1)
+      })
+    )
+    
+    (map-set skill-provider-profiles suggested-provider
+      (merge provider-profile {
+        active-applications: (+ (get active-applications provider-profile) u1)
+      })
+    )
+    
+    (print {
+      type: "experienced-provider-suggested",
+      service-id: service-id,
+      suggested-provider: suggested-provider,
+      success-probability: success-probability,
+      initial-skill-score: initial-skill-score,
+      quota-slot: "experienced",
+      experienced-suggestions-made: (+ (get experienced-provider-suggestions-made quota-info) u1),
+      block: block-height
+    })
+    
+    (ok true)
+  )
+)
+
+;; NEW PROVIDER ONBOARDING SYSTEM (SIMPLIFIED)
+(define-public (start-new-provider-onboarding
+  (skills-to-verify (list 5 (string-ascii 50)))
+  (portfolio-links (list 5 (string-ascii 200)))
+  (external-verifications (list 3 (string-ascii 300))) ;; GitHub, LinkedIn, etc.
+)
+  (let ((provider-profile (map-get? skill-provider-profiles tx-sender)))
+    (asserts! (is-some provider-profile) (err u105)) ;; Must have basic profile
+    (asserts! (and (> (len skills-to-verify) u0) (<= (len skills-to-verify) u5)) (err u117))
+    
+    ;; Initialize new provider trial system
+    (map-set new-provider-trials tx-sender
+      {
+        trial-projects-completed: u0,
+        trial-success-rate: u0,
+        skill-verification-score: u0,
+        portfolio-verification-score: u0,
+        external-verification-score: u0,
+        trial-period-active: true,
+        trial-start-block: block-height
+      }
+    )
+    
+    (print {
+      type: "new-provider-onboarding-started",
+      provider: tx-sender,
+      skills-to-verify: skills-to-verify,
+      portfolio-count: (len portfolio-links),
+      external-verifications: external-verifications,
+      block: block-height
+    })
+    
+    (ok true)
+  )
+)
+
+;; AI GIVES SIMPLE SKILL BOOST (Optional)
+(define-public (give-skill-verification-boost
+  (provider principal)
+  (skill (string-ascii 50))
+  (boost-amount uint) ;; 5-25 point boost
+)
+  (let 
+    (
+      (challenge (map-get? skill-verification-challenges { provider: provider, skill: skill }))
+      (trial-data (unwrap! (map-get? new-provider-trials provider) (err u101)))
+    )
+    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
+    (asserts! (is-some challenge) (err u101))
+    
+    ;; Validate untrusted inputs
+    (asserts! (is-valid-principal provider) (err u117))
+    (asserts! (is-valid-string skill u1 u50) (err u117))
+    (asserts! (is-valid-boost-amount boost-amount) (err u117))
+    
+    (match challenge
+      challenge-data
+      (begin
+        ;; Update challenge status
+        (map-set skill-verification-challenges { provider: provider, skill: skill }
+          (merge challenge-data {
+            ai-assessment-score: (some boost-amount),
+            verification-status: u1, ;; passed
+            completion-timestamp: (some block-height)
+          })
+        )
+        
+        ;; Give skill boost to provider
+        (let ((current-score (get skill-verification-score trial-data)))
+          (map-set new-provider-trials provider
+            (merge trial-data {
+              skill-verification-score: (+ current-score boost-amount)
+            })
+          )
+        )
+        
+        (print {
+          type: "optional-skill-boost-given",
+          provider: provider,
+          skill: skill,
+          boost-amount: boost-amount,
+          new-total-score: (+ (get skill-verification-score trial-data) boost-amount),
+          block: block-height
+        })
+        
+        (ok boost-amount)
+      )
+      (err u101)
+    )
+  )
+)
+
+;; CREATE PROVIDER PROFILE
 (define-public (create-provider-profile (initial-skills (list 15 (string-ascii 50))))
   (let ((skills-len (len initial-skills)))
     (asserts! (and (> skills-len u0) (<= skills-len u15)) (err u117))
@@ -778,16 +1227,13 @@
       )
       (if favor-client
         (begin
-          (try! (as-contract (stx-transfer? 
-            refund-amount tx-sender (get client-address service-info))))
-          (if (> provider-amount u0)
-            (try! (as-contract (stx-transfer? 
-              provider-amount tx-sender (unwrap-panic (get provider-address service-info)))))
-            true
-          )
+          (try! (as-contract (stx-transfer? refund-amount tx-sender (get client-address service-info))))
+          (try! (as-contract (stx-transfer? provider-amount tx-sender (unwrap-panic (get provider-address service-info)))))
         )
-        (try! (as-contract (stx-transfer? 
-          (get provider-payout-amount escrow-info) tx-sender (unwrap-panic (get provider-address service-info)))))
+        (begin
+          (try! (as-contract (stx-transfer? refund-amount tx-sender (get client-address service-info))))
+          (try! (as-contract (stx-transfer? provider-amount tx-sender (unwrap-panic (get provider-address service-info)))))
+        )
       )
       
       (map-set service-requests service-id
@@ -879,9 +1325,11 @@
     minimum-service-amount: (var-get minimum-service-amount),
     platform-fee-rate: PLATFORM-FEE-RATE,
     primary-currency: "STX",
-    selection-model: "client-choice-with-ai-suggestions",
+    selection-model: "ai-predicted-success-with-dynamic-pricing",
     native-blockchain: "Stacks",
-    payment-model: "stx-only"
+    payment-model: "stx-escrow-with-competency-adjustments",
+    min-success-threshold: MIN-SUCCESS-PROBABILITY,
+    dynamic-pricing-enabled: true
   }
 )
 
@@ -896,8 +1344,10 @@
       "Native STX tokens - no wrapping required"
       "Direct wallet integration"
       "Fast transaction settlement"
-      "Low fees compared to Ethereum"
       "Built-in escrow protection"
+      "AI-predicted success matching (80%+ only)"
+      "Dynamic pricing based on real competency"
+      "Performance-based payment adjustments"
     )
   }
 )
@@ -906,6 +1356,7 @@
 (define-public (set-oracle-contract (oracle-addr principal))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
+    (asserts! (is-valid-principal oracle-addr) (err u117))
     (var-set oracle-contract oracle-addr)
     (ok oracle-addr)
   )
@@ -940,6 +1391,7 @@
 (define-public (set-treasury-address (treasury principal))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
+    (asserts! (is-valid-principal treasury) (err u117))
     (var-set platform-treasury treasury)
     (ok treasury)
   )
