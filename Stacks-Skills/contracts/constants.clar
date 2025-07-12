@@ -130,6 +130,7 @@
 ;; Public functions to access constants
 (define-read-only (get-platform-fee-rate) PLATFORM-FEE-RATE)
 (define-read-only (get-basis-points) BASIS-POINTS)
+(define-read-only (get-minimum-liquidity) MINIMUM-LIQUIDITY)
 
 ;; SKILL Token getters
 (define-read-only (get-skill-token-price) SKILL-TOKEN-PRICE-STX)
@@ -191,6 +192,11 @@
 (define-read-only (get-service-status-disputed) SERVICE-STATUS-DISPUTED)
 (define-read-only (get-service-status-cancelled) SERVICE-STATUS-CANCELLED)
 
+;; Verification status getters (NEW)
+(define-read-only (get-verification-status-pending) VERIFICATION-PENDING)
+(define-read-only (get-verification-status-approved) VERIFICATION-APPROVED)
+(define-read-only (get-verification-status-rejected) VERIFICATION-REJECTED)
+
 (define-read-only (get-min-rating) MIN-RATING)
 (define-read-only (get-max-rating) MAX-RATING)
 (define-read-only (get-min-provider-rating-threshold) MIN-PROVIDER-RATING-THRESHOLD)
@@ -214,7 +220,9 @@
 ;; New feature getters
 (define-read-only (get-min-success-probability) MIN-SUCCESS-PROBABILITY)
 (define-read-only (get-new-provider-success-threshold) NEW-PROVIDER-SUCCESS-THRESHOLD)
+(define-read-only (get-default-new-provider-skill-score) DEFAULT-NEW-PROVIDER-SKILL-SCORE) ;; NEW
 (define-read-only (get-new-provider-quota-percentage) NEW-PROVIDER-QUOTA-PERCENTAGE)
+(define-read-only (get-min-new-provider-suggestions) MIN-NEW-PROVIDER-SUGGESTIONS) ;; NEW
 (define-read-only (get-max-total-suggestions) MAX-TOTAL-SUGGESTIONS)
 (define-read-only (get-new-provider-trial-projects) NEW-PROVIDER-TRIAL-PROJECTS)
 (define-read-only (get-max-skill-verification-boost) MAX-SKILL-VERIFICATION-BOOST)
@@ -224,6 +232,7 @@
 (define-read-only (get-max-competency-penalty) MAX-COMPETENCY-PENALTY)
 (define-read-only (get-min-price-adjustment-factor) MIN-PRICE-ADJUSTMENT-FACTOR)
 (define-read-only (get-max-price-adjustment-factor) MAX-PRICE-ADJUSTMENT-FACTOR)
+(define-read-only (get-significant-price-change-threshold) SIGNIFICANT-PRICE-CHANGE-THRESHOLD) ;; NEW
 
 ;; Rate limiting getters
 (define-read-only (get-max-applications-per-block) MAX-APPLICATIONS-PER-BLOCK)
