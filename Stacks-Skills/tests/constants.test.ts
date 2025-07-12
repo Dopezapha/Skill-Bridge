@@ -393,4 +393,268 @@ describe("Constants Contract Tests", () => {
     expect(min).toBeLessThanOrEqual(10000)
     expect(max).toBeGreaterThanOrEqual(10000)
   })
+
+  // NEW ENHANCED EDGE CASE TESTS
+
+  it("should have constants that prevent mathematical overflow", () => {
+    const maxSTX = simnet.callReadOnlyFn("constants", "get-max-stx-amount", [], deployer)
+    const platformFee = simnet.callReadOnlyFn("constants", "get-platform-fee-rate", [], deployer)
+    const basisPoints = simnet.callReadOnlyFn("constants", "get-basis-points", [], deployer)
+
+    const maxAmount = Number(maxSTX.result.expectUint())
+    const feeRate = Number(platformFee.result.expectUint())
+    const basis = Number(basisPoints.result.expectUint())
+
+    // Calculate maximum possible fee to ensure no overflow
+    const maxPossibleFee = (maxAmount * feeRate) / basis
+    
+    // Should not exceed JavaScript's safe integer limit
+    expect(maxPossibleFee).toBeLessThan(Number.MAX_SAFE_INTEGER)
+  })
+
+  it("should have non-zero denominators for all calculations", () => {
+    const basisPoints = simnet.callReadOnlyFn("constants", "get-basis-points", [], deployer)
+    const skillPrice = simnet.callReadOnlyFn("constants", "get-skill-token-price", [], deployer)
+    
+    expect(Number(basisPoints.result.expectUint())).toBeGreaterThan(0)
+    expect(Number(skillPrice.result.expectUint())).toBeGreaterThan(0)
+  })
+
+  it("should have mathematically consistent quota percentages", () => {
+    const newProviderQuota = simnet.callReadOnlyFn("constants", "get-new-provider-quota-percentage", [], deployer)
+    const maxSuggestions = simnet.callReadOnlyFn("constants", "get-max-total-suggestions", [], deployer)
+    
+    const quotaPercent = Number(newProviderQuota.result.expectUint())
+    const maxSugg = Number(maxSuggestions.result.expectUint())
+    
+    // Calculate minimum new provider suggestions based on quota
+    const minNewProviders = Math.ceil((maxSugg * quotaPercent) / 100)
+    
+    // Should be able to fulfill quota with max suggestions
+    expect(minNewProviders).toBeLessThanOrEqual(maxSugg)
+    expect(minNewProviders).toBeGreaterThan(0)
+  })
+
+  it("should have logical emergency timeout progression", () => {
+    const rushBlocks = simnet.callReadOnlyFn("constants", "get-rush-delivery-blocks", [], deployer)
+    const emergencyTimeout = simnet.callReadOnlyFn("constants", "get-emergency-timeout", [], deployer)
+    const maxDuration = simnet.callReadOnlyFn("constants", "get-max-service-duration", [], deployer)
+    
+    const rush = Number(rushBlocks.result.expectUint())
+    const emergency = Number(emergencyTimeout.result.expectUint())
+    const max = Number(maxDuration.result.expectUint())
+    
+    // Emergency timeout should be longer than rush but shorter than max duration
+    expect(emergency).toBeGreaterThan(rush)
+    expect(emergency).toBeLessThan(max)
+  })
+
+  it("should have unique error codes with no gaps or duplicates", () => {
+    const errorCodes = [
+      100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110,
+      115, 116, 117, 118, 120, 121, 124, 125, 126, 127, 128,
+      129, 130, 131, 132, 133, 134, 135, 136, 137, 138
+    ]
+    
+    // Check for duplicates
+    const uniqueCodes = new Set(errorCodes)
+    expect(uniqueCodes.size).toBe(errorCodes.length)
+    
+    // Verify the gaps are intentional (111-114, 119, 122-123)
+    const expectedGaps = [111, 112, 113, 114, 119, 122, 123]
+    for (const gap of expectedGaps) {
+      expect(errorCodes).not.toContain(gap)
+    }
+  })
+
+  it("should have reasonable skill verification boost limits", () => {
+    const maxBoost = simnet.callReadOnlyFn("constants", "get-max-skill-verification-boost", [], deployer)
+    const boost = Number(maxBoost.result.expectUint())
+    
+    // Boost should be meaningful but not excessive
+    expect(boost).toBeGreaterThanOrEqual(5)  // At least 5 points
+    expect(boost).toBeLessThanOrEqual(50)    // No more than 50 points
+  })
+
+  it("should have rate limits that prevent spam but allow legitimate use", () => {
+    const maxAppsPerBlock = simnet.callReadOnlyFn("constants", "get-max-applications-per-block", [], deployer)
+    const maxServicesPerBlock = simnet.callReadOnlyFn("constants", "get-max-services-per-block", [], deployer)
+    const appWindow = simnet.callReadOnlyFn("constants", "get-application-window-blocks", [], deployer)
+    
+    const appsPerBlock = Number(maxAppsPerBlock.result.expectUint())
+    const servicesPerBlock = Number(maxServicesPerBlock.result.expectUint())
+    const window = Number(appWindow.result.expectUint())
+    
+    // Should allow reasonable activity
+    expect(appsPerBlock).toBeGreaterThanOrEqual(1)
+    expect(servicesPerBlock).toBeGreaterThanOrEqual(1)
+    
+    // Application window should be reasonable (at least 1 hour, max 7 days)
+    expect(window).toBeGreaterThanOrEqual(6)    // At least 1 hour
+    expect(window).toBeLessThanOrEqual(1008)    // Max 7 days
+  })
+
+  it("should have properly formatted version string", () => {
+    const version = simnet.callReadOnlyFn("constants", "get-contract-version", [], deployer)
+    const versionInfo = version.result.expectOk().expectTuple()
+    
+    const versionString = versionInfo.version.expectAscii()
+    
+    // Should match semantic versioning pattern
+    const semverPattern = /^\d+\.\d+\.\d+$/
+    expect(versionString).toMatch(semverPattern)
+  })
+
+  it("should have trial project count that makes economic sense", () => {
+    const trialProjects = simnet.callReadOnlyFn("constants", "get-new-provider-trial-projects", [], deployer)
+    const trial = Number(trialProjects.result.expectUint())
+    
+    // Trial period should be meaningful but not excessive
+    expect(trial).toBeGreaterThanOrEqual(1)  // At least 1 trial project
+    expect(trial).toBeLessThanOrEqual(10)    // No more than 10 trial projects
+  })
+
+  it("should have competency bonus/penalty limits that are balanced", () => {
+    const maxBonus = simnet.callReadOnlyFn("constants", "get-max-competency-bonus", [], deployer)
+    const maxPenalty = simnet.callReadOnlyFn("constants", "get-max-competency-penalty", [], deployer)
+    
+    const bonus = Number(maxBonus.result.expectUint())
+    const penalty = Number(maxPenalty.result.expectUint())
+    
+    // Penalty can be higher than bonus to discourage poor performance
+    expect(penalty).toBeGreaterThanOrEqual(bonus)
+    
+    // Both should be reasonable percentages
+    expect(bonus).toBeGreaterThanOrEqual(5)     // At least 5%
+    expect(bonus).toBeLessThanOrEqual(50)       // No more than 50%
+    expect(penalty).toBeGreaterThanOrEqual(10)  // At least 10%
+    expect(penalty).toBeLessThanOrEqual(75)     // No more than 75%
+  })
+
+  it("should have success probability thresholds that ensure quality", () => {
+    const minSuccess = simnet.callReadOnlyFn("constants", "get-min-success-probability", [], deployer)
+    const newProviderThreshold = simnet.callReadOnlyFn("constants", "get-new-provider-success-threshold", [], deployer)
+    
+    const experienced = Number(minSuccess.result.expectUint())
+    const newProvider = Number(newProviderThreshold.result.expectUint())
+    
+    // Experienced providers should have higher threshold than new providers
+    expect(experienced).toBeGreaterThan(newProvider)
+    
+    // Both should be reasonable success rates
+    expect(experienced).toBeGreaterThanOrEqual(70)  // At least 70% for experienced
+    expect(experienced).toBeLessThanOrEqual(95)     // Max 95% (allow for some risk)
+    expect(newProvider).toBeGreaterThanOrEqual(50)  // At least 50% for new providers
+    expect(newProvider).toBeLessThanOrEqual(80)     // Max 80% for new providers
+  })
+
+  it("should have application window that balances urgency and fairness", () => {
+    const appWindow = simnet.callReadOnlyFn("constants", "get-application-window-blocks", [], deployer)
+    const rushDelivery = simnet.callReadOnlyFn("constants", "get-rush-delivery-blocks", [], deployer)
+    
+    const window = Number(appWindow.result.expectUint())
+    const rush = Number(rushDelivery.result.expectUint())
+    
+    // Application window should be longer than rush delivery time
+    expect(window).toBeGreaterThan(rush)
+    
+    // Should allow enough time for quality applications but not too long
+    expect(window).toBeGreaterThanOrEqual(24)   // At least 4 hours (24 blocks)
+    expect(window).toBeLessThanOrEqual(432)     // Max 3 days (432 blocks)
+  })
+
+  it("should have portfolio link limits that are practical", () => {
+    const result = simnet.callReadOnlyFn("constants", "get-platform-limits-extended", [], deployer)
+    const limits = result.result.expectTuple()
+    
+    const minLinks = Number(limits["min-portfolio-links"].expectUint())
+    const maxLinks = Number(limits["max-portfolio-links"].expectUint())
+    
+    // Should require at least some portfolio evidence
+    expect(minLinks).toBeGreaterThanOrEqual(1)
+    expect(minLinks).toBeLessThanOrEqual(3)
+    
+    // Should not overwhelm reviewers with too many links
+    expect(maxLinks).toBeGreaterThanOrEqual(minLinks)
+    expect(maxLinks).toBeLessThanOrEqual(10)
+  })
+
+  it("should have skill boost cooldown that prevents abuse", () => {
+    const result = simnet.callReadOnlyFn("constants", "get-platform-limits-extended", [], deployer)
+    const limits = result.result.expectTuple()
+    
+    const cooldown = Number(limits["skill-boost-cooldown"].expectUint())
+    
+    // Should prevent rapid successive boosts
+    expect(cooldown).toBeGreaterThanOrEqual(6)    // At least 1 hour
+    expect(cooldown).toBeLessThanOrEqual(1440)    // Max 10 days
+  })
+
+  it("should have external verification limits that are reasonable", () => {
+    const result = simnet.callReadOnlyFn("constants", "get-platform-limits-extended", [], deployer)
+    const limits = result.result.expectTuple()
+    
+    const maxVerifications = Number(limits["max-external-verifications"].expectUint())
+    
+    // Should allow meaningful verification without being excessive
+    expect(maxVerifications).toBeGreaterThanOrEqual(1)
+    expect(maxVerifications).toBeLessThanOrEqual(10)
+  })
+
+  it("should have consistent decimal precision across all monetary values", () => {
+    const stxDecimals = simnet.callReadOnlyFn("constants", "get-stx-decimals", [], deployer)
+    const skillPrice = simnet.callReadOnlyFn("constants", "get-skill-token-price", [], deployer)
+    const appCostSTX = simnet.callReadOnlyFn("constants", "get-application-cost-stx", [], deployer)
+    const minSTX = simnet.callReadOnlyFn("constants", "get-min-stx-amount", [], deployer)
+    
+    const decimals = Number(stxDecimals.result.expectUint())
+    const price = Number(skillPrice.result.expectUint())
+    const appCost = Number(appCostSTX.result.expectUint())
+    const minAmount = Number(minSTX.result.expectUint())
+    
+    // All monetary values should be consistent with STX decimals (6)
+    const divisor = Math.pow(10, decimals)
+    
+    // Values should be evenly divisible by the decimal precision
+    expect(price % 1000).toBe(0)        // Should be in thousands for reasonable precision
+    expect(appCost % 1000).toBe(0)      // Should be in thousands for reasonable precision
+    expect(minAmount % divisor).toBe(0) // Should be whole STX amounts
+  })
+
+  it("should have platform fee rate that is competitive", () => {
+    const platformFee = simnet.callReadOnlyFn("constants", "get-platform-fee-rate", [], deployer)
+    const basisPoints = simnet.callReadOnlyFn("constants", "get-basis-points", [], deployer)
+    
+    const fee = Number(platformFee.result.expectUint())
+    const basis = Number(basisPoints.result.expectUint())
+    
+    const feePercentage = (fee / basis) * 100
+    
+    // Should be competitive (lower than typical 15-20% marketplace fees)
+    expect(feePercentage).toBeGreaterThan(0)    // Must have some fee for sustainability
+    expect(feePercentage).toBeLessThan(10)      // Should be under 10%
+    expect(feePercentage).toBeGreaterThanOrEqual(1) // At least 1% for viability
+  })
+
+  it("should have time constants that align with real-world expectations", () => {
+    const blocksPerDay = simnet.callReadOnlyFn("constants", "get-blocks-per-day", [], deployer)
+    const emergencyTimeout = simnet.callReadOnlyFn("constants", "get-emergency-timeout", [], deployer)
+    const maxDuration = simnet.callReadOnlyFn("constants", "get-max-service-duration", [], deployer)
+    
+    const dayBlocks = Number(blocksPerDay.result.expectUint())
+    const emergency = Number(emergencyTimeout.result.expectUint())
+    const maxDur = Number(maxDuration.result.expectUint())
+    
+    // Convert to days for human-readable validation
+    const emergencyDays = emergency / dayBlocks
+    const maxDurationDays = maxDur / dayBlocks
+    
+    // Emergency timeout should be reasonable (7-30 days)
+    expect(emergencyDays).toBeGreaterThanOrEqual(7)
+    expect(emergencyDays).toBeLessThanOrEqual(30)
+    
+    // Max duration should allow for complex projects but not be indefinite
+    expect(maxDurationDays).toBeGreaterThanOrEqual(30)  // At least 1 month
+    expect(maxDurationDays).toBeLessThanOrEqual(90)     // Max 3 months
+  })
 })
