@@ -1,1586 +1,426 @@
 ;; skillflow-main.clar
-;; SkillFlow Main Contract
-;; Provider Selection System - AI suggests, client chooses
-;; STX-only payment system with SKILL token application fees
-
-;; Define trait for SKILL token contract
-(define-trait skill-token-trait
-  (
-    (spend-for-application (principal uint) (response bool uint))
-    (can-afford-application (principal) (response bool uint))
-    (get-balance (principal) (response uint uint))
-  )
-)
+;; Client must deposit sBTC to escrow BEFORE freelancer sees acceptance
+;; This prevents fake acceptances and ensures immediate payment security
 
 ;; Constants
 (define-constant CONTRACT-OWNER tx-sender)
-(define-constant BASIS-POINTS u10000)
-(define-constant MAX-APPLICATIONS-PER-SERVICE u15)
-(define-constant MAX-PORTFOLIO-LINKS u5)
-(define-constant APPLICATION-WINDOW-BLOCKS u144) ;; 24 hours to apply
-(define-constant PLATFORM-FEE-RATE u250) ;; 2.5%
-(define-constant MIN-STX-AMOUNT u1000000) ;; 1 STX minimum
+(define-constant JOB-CREATION-FEE-STX u1000000) ;; 1 STX to create job
+(define-constant MIN-STX-BALANCE u1000000) ;; 1 STX minimum balance
+(define-constant MIN-SBTC-ESCROW u100000) ;; 0.001 sBTC minimum escrow
+
+;; Error constants
+(define-constant ERR-UNAUTHORIZED (err u100))
+(define-constant ERR-NOT-FOUND (err u101))
+(define-constant ERR-INVALID-STATE (err u102))
+(define-constant ERR-INSUFFICIENT-FUNDS (err u103))
+(define-constant ERR-DUPLICATE (err u104))
+(define-constant ERR-INVALID-AMOUNT (err u110))
+(define-constant ERR-INVALID-INPUT (err u117))
+(define-constant ERR-INSUFFICIENT-BALANCE (err u120))
 
 ;; Data variables
-(define-data-var platform-active bool true)
-(define-data-var emergency-mode bool false)
-(define-data-var minimum-service-amount uint u1000000) ;; 1 STX minimum
-(define-data-var next-service-id uint u1)
 (define-data-var platform-treasury principal tx-sender)
-(define-data-var oracle-contract principal tx-sender)
+(define-data-var platform-active bool true)
+(define-data-var total-jobs-created uint u0)
+(define-data-var total-fees-collected uint u0)
 
-;; SKILL Token contract reference
-(define-data-var skill-token-contract principal tx-sender)
-
-;; Enhanced data maps
-(define-map skill-provider-profiles
-  principal
+;; Job creation tracking - minimal on-chain data
+(define-map job-payments
+  (string-ascii 64) ;; external-job-id from off-chain system
   {
-    verified-skills: (list 15 (string-ascii 50)),
-    verification-status: uint,
-    verification-timestamp: uint,
-    total-services-completed: uint,
-    total-earnings: uint, ;; in microSTX
-    current-rating: uint,
-    rating-count: uint,
-    profile-creation-block: uint,
-    kyc-verified: bool,
-    response-rate: uint,
-    avg-delivery-time: uint,
-    active-applications: uint
+    client: principal,
+    fee-paid: uint,
+    created-at: uint,
+    status: uint, ;; 0: posted, 1: accepted-with-escrow, 2: completed, 3: cancelled
+    escrow-created: bool,
+    escrow-id: (optional uint),
+    accepted-freelancer: (optional principal), ;; Set when escrow created
+    acceptance-block: (optional uint) ;; When freelancer was accepted
   }
 )
 
-(define-map service-requests
-  uint
+;; Freelancer acceptance tracking - only visible after escrow creation
+(define-map freelancer-acceptances
+  { job-id: (string-ascii 64), freelancer: principal }
   {
-    client-address: principal,
-    provider-address: (optional principal),
-    skill-category: (string-ascii 50),
-    service-description: (string-ascii 500),
-    payment-amount: uint, ;; in microSTX
-    creation-timestamp: uint,
-    expiration-timestamp: uint,
-    application-deadline: uint,
-    current-status: uint,
-    video-session-url: (optional (string-ascii 200)),
-    completion-evidence: (optional (string-ascii 200)),
-    client-rating: (optional uint),
-    provider-rating: (optional uint),
-    rush-delivery: bool,
-    estimated-duration-minutes: uint,
-    ai-suggestions-generated: bool,
-    client-selection-required: bool
+    accepted-at: uint,
+    escrow-id: uint,
+    client: principal,
+    sbtc-amount: uint,
+    visible-to-freelancer: bool ;; Only true after escrow funding
   }
-)
-
-;; Provider applications system
-(define-map service-applications
-  { service-id: uint, provider: principal }
-  {
-    application-message: (string-ascii 300),
-    proposed-timeline: uint,
-    proposed-price: (optional uint), ;; in microSTX
-    portfolio-links: (list 5 (string-ascii 200)),
-    application-timestamp: uint,
-    application-status: uint,
-    estimated-delivery: uint,
-    provider-questions: (optional (string-ascii 200)),
-    is-ai-suggested: bool
-  }
-)
-
-(define-map service-application-count
-  uint ;; service-id
-  uint ;; number of applications
-)
-
-(define-map provider-applications
-  principal
-  (list 20 uint)
-)
-
-;; AI suggestions tracking
-(define-map ai-suggestion-status
-  uint ;; service-id
-  {
-    suggestions-requested: bool,
-    suggestions-generated: bool,
-    suggestion-count: uint
-  }
-)
-
-;; SUCCESS PREDICTION SYSTEM
-(define-map project-success-predictions
-  uint ;; service-id
-  {
-    success-probability: uint, ;; 0-100%
-    risk-factors: (list 10 (string-ascii 50)),
-    recommended-adjustments: (string-ascii 300),
-    prediction-timestamp: uint,
-    confidence-score: uint
-  }
-)
-
-;; DYNAMIC COMPETENCY PRICING
-(define-map competency-assessments
-  { service-id: uint, provider: principal }
-  {
-    initial-skill-score: uint, ;; 0-100
-    demonstrated-competency: uint, ;; 0-100, updated during work
-    competency-verified: bool,
-    price-adjustment-factor: uint, ;; basis points (10000 = 100%)
-    assessment-timestamp: uint,
-    verification-evidence: (optional (string-ascii 200))
-  }
-)
-
-;; MINIMUM SUCCESS THRESHOLD
-(define-constant MIN-SUCCESS-PROBABILITY u80) ;; 80% minimum
-(define-constant NEW-PROVIDER-SUCCESS-THRESHOLD u70) ;; 70% for new providers
-(define-constant NEW-PROVIDER-TRIAL-PROJECTS u3) ;; First 3 projects get special treatment
-
-;; NEW PROVIDER QUOTA SYSTEM
-(define-constant NEW-PROVIDER-QUOTA-PERCENTAGE u30) ;; 30% of suggestions must be new providers
-(define-constant MIN-NEW-PROVIDER-SUGGESTIONS u1) ;; At least 1 new provider per service
-(define-constant MAX-TOTAL-SUGGESTIONS u5) ;; Max suggestions per service
-
-;; SERVICE SUGGESTION TRACKING
-(define-map service-suggestion-quotas
-  uint ;; service-id
-  {
-    total-suggestions-target: uint,
-    new-provider-suggestions-target: uint,
-    experienced-provider-suggestions-target: uint,
-    new-provider-suggestions-made: uint,
-    experienced-provider-suggestions-made: uint,
-    quota-fulfilled: bool
-  }
-)
-
-;; NEW PROVIDER OPPORTUNITY SYSTEM
-(define-map new-provider-trials
-  principal
-  {
-    trial-projects-completed: uint,
-    trial-success-rate: uint,
-    skill-verification-score: uint,
-    portfolio-verification-score: uint,
-    external-verification-score: uint,
-    trial-period-active: bool,
-    trial-start-block: uint
-  }
-)
-
-;; SKILL VERIFICATION FOR NEW PROVIDERS
-(define-map skill-verification-challenges
-  { provider: principal, skill: (string-ascii 50) }
-  {
-    challenge-type: (string-ascii 100),
-    submission-hash: (optional (string-ascii 200)),
-    ai-assessment-score: (optional uint),
-    verification-status: uint, ;; 0: pending, 1: passed, 2: failed
-    completion-timestamp: (optional uint),
-    external-proof: (optional (string-ascii 300))
-  }
-)
-
-(define-map payment-escrow-system
-  uint
-  {
-    total-escrowed-amount: uint, ;; in microSTX
-    platform-fee-amount: uint, ;; in microSTX
-    provider-payout-amount: uint, ;; in microSTX
-    funds-locked-status: bool,
-    escrow-creation-block: uint,
-    auto-release-block: (optional uint)
-  }
-)
-
-(define-map client-profiles
-  principal
-  {
-    total-services-requested: uint,
-    total-amount-spent: uint, ;; in microSTX
-    average-provider-rating: uint,
-    payment-defaults: uint,
-    account-creation-block: uint,
-    kyc-status: bool
-  }
-)
-
-;; Helper function to get the maximum of two values
-(define-private (get-max (a uint) (b uint))
-  (if (> a b) a b)
-)
-
-;; Helper function to check and spend SKILL tokens
-(define-private (spend-skill-tokens-for-application (applicant principal))
-  (let ((skill-contract (var-get skill-token-contract)))
-    (if (is-eq skill-contract tx-sender)
-      ;; If skill token contract not set, allow free applications (for testing/migration)
-      (ok true)
-      ;; Call the SKILL token contract by name (for development)
-      (begin
-        (asserts! (is-valid-principal skill-contract) (err u137))
-        ;; Reference the contract by its filename (without .clar extension)
-        (unwrap! (contract-call? 
-          .skills-token 
-          spend-for-application 
-          applicant 
-          u1000000) ;; 1 SKILL token
-          (err u136))
-        (ok true)
-      )
-    )
-  )
-)
-
-;; Enhanced validation functions
-(define-private (is-valid-timeline (timeline uint))
-  (and (> timeline u0) (<= timeline u1440)) ;; Max 24 hours
-)
-
-(define-private (is-valid-probability (prob uint))
-  (and (>= prob u0) (<= prob u100))
-)
-
-(define-private (is-valid-skill-score (score uint))
-  (and (>= score u0) (<= score u100))
-)
-
-(define-private (is-valid-risk-factors (factors (list 10 (string-ascii 50))))
-  (and 
-    (>= (len factors) u0)
-    (<= (len factors) u10)
-  )
-)
-
-(define-private (is-valid-adjustments (adjustments (string-ascii 300)))
-  (and 
-    (>= (len adjustments) u0)
-    (<= (len adjustments) u300)
-  )
-)
-
-(define-private (is-valid-portfolio-links (links (list 5 (string-ascii 200))))
-  (and 
-    (>= (len links) u0)
-    (<= (len links) u5)
-  )
-)
-
-(define-private (is-valid-boost-amount (amount uint))
-  (and (>= amount u1) (<= amount u25))
-)
-
-(define-private (is-valid-principal (addr principal))
-  (not (is-eq addr 'ST000000000000000000002AMW42H)) ;; Not burn address
-)
-
-;; New validation functions for optional types
-(define-private (is-valid-optional-price (price (optional uint)))
-  (match price
-    some-price (is-valid-stx-amount some-price)
-    true
-  )
-)
-
-(define-private (is-valid-optional-questions (questions (optional (string-ascii 200))))
-  (match questions
-    some-questions (is-valid-string some-questions u1 u200)
-    true
-  )
 )
 
 ;; Validation functions
-(define-private (is-valid-stx-amount (amount uint))
-  (and (> amount u0) (<= amount u100000000000)) ;; Max 100K STX
+(define-private (is-valid-job-id (job-id (string-ascii 64)))
+  (> (len job-id) u0)
 )
 
-(define-private (is-valid-string (str (string-ascii 500)) (min-len uint) (max-len uint))
+(define-private (is-valid-principal (addr principal))
   (and 
-    (>= (len str) min-len)
-    (<= (len str) max-len)
+    (not (is-eq addr 'SP000000000000000000002Q6VF78))
+    (not (is-eq addr (as-contract tx-sender)))
   )
 )
 
-(define-private (is-valid-rating (rating uint))
-  (and (>= rating u10) (<= rating u50))
+(define-private (is-valid-sbtc-amount (amount uint))
+  (and (>= amount MIN-SBTC-ESCROW) (<= amount u100000000000)) ;; 0.001 to 1000 sBTC
 )
 
-(define-private (calculate-percentage (amount uint) (percentage uint))
-  (/ (* amount percentage) BASIS-POINTS)
-)
-
-;; STX balance functions
-(define-read-only (check-user-stx-balance (user principal))
-  (stx-get-balance user)
-)
-
-(define-read-only (validate-user-balance-for-service (user principal) (service-cost uint))
-  (let 
-    (
-      (platform-fee (calculate-percentage service-cost PLATFORM-FEE-RATE))
-      (total-needed (+ service-cost platform-fee))
-      (user-balance (stx-get-balance user))
-    )
-    (ok {
-      sufficient: (>= user-balance total-needed),
-      user-balance: user-balance,
-      service-cost: service-cost,
-      platform-fee: platform-fee,
-      total-needed: total-needed,
-      remaining-after: (if (>= user-balance total-needed) 
-                         (some (- user-balance total-needed)) 
-                         none),
-      shortfall: (if (< user-balance total-needed) 
-                   (some (- total-needed user-balance)) 
-                   none)
-    })
-  )
-)
-
-;; MAIN SERVICE CREATION
-(define-public (create-service-request
-  (skill-category (string-ascii 50))
-  (service-description (string-ascii 500))
-  (payment-amount uint) ;; in microSTX
-  (rush-delivery bool)
-  (duration-minutes uint)
-  (request-ai-suggestions bool)
-)
-  (let 
-    (
-      (service-id (var-get next-service-id))
-      (platform-fee (calculate-percentage payment-amount PLATFORM-FEE-RATE))
-      (total-payment (+ payment-amount platform-fee))
-      (expiration-time (+ block-height (if rush-delivery u60 u288)))
-      (application-deadline (+ block-height APPLICATION-WINDOW-BLOCKS))
-      (user-stx-balance (stx-get-balance tx-sender))
-    )
+;; Pay job creation fee - called when job is posted off-chain
+(define-public (pay-job-creation-fee (external-job-id (string-ascii 64)))
+  (begin
     ;; Input validation
-    (asserts! (var-get platform-active) (err u100))
-    (asserts! (is-valid-string skill-category u1 u50) (err u117))
-    (asserts! (is-valid-string service-description u1 u500) (err u117))
-    (asserts! (is-valid-stx-amount payment-amount) (err u110))
-    (asserts! (<= duration-minutes u1440) (err u117))
-    (asserts! (>= payment-amount (var-get minimum-service-amount)) (err u110))
-    (asserts! (>= user-stx-balance total-payment) (err u120))
+    (asserts! (var-get platform-active) ERR-UNAUTHORIZED)
+    (asserts! (is-valid-job-id external-job-id) ERR-INVALID-INPUT)
+    (asserts! (is-none (map-get? job-payments external-job-id)) ERR-DUPLICATE)
     
-    ;; Transfer STX to escrow
-    (try! (stx-transfer? total-payment tx-sender (as-contract tx-sender)))
+    ;; Check STX balance and charge fee
+    (asserts! (>= (stx-get-balance tx-sender) JOB-CREATION-FEE-STX) ERR-INSUFFICIENT-BALANCE)
+    (try! (stx-transfer? JOB-CREATION-FEE-STX tx-sender (var-get platform-treasury)))
     
-    ;; Create service request
-    (map-set service-requests service-id
+    ;; Record payment
+    (map-set job-payments external-job-id
       {
-        client-address: tx-sender,
-        provider-address: none,
-        skill-category: skill-category,
-        service-description: service-description,
-        payment-amount: payment-amount,
-        creation-timestamp: block-height,
-        expiration-timestamp: expiration-time,
-        application-deadline: application-deadline,
-        current-status: u0,
-        video-session-url: none,
-        completion-evidence: none,
-        client-rating: none,
-        provider-rating: none,
-        rush-delivery: rush-delivery,
-        estimated-duration-minutes: duration-minutes,
-        ai-suggestions-generated: false,
-        client-selection-required: true
-      }
-    )
-    
-    ;; Setup escrow
-    (map-set payment-escrow-system service-id
-      {
-        total-escrowed-amount: total-payment,
-        platform-fee-amount: platform-fee,
-        provider-payout-amount: payment-amount,
-        funds-locked-status: true,
-        escrow-creation-block: block-height,
-        auto-release-block: (if rush-delivery (some (+ block-height u1440)) none)
-      }
-    )
-    
-    ;; Initialize application tracking
-    (map-set service-application-count service-id u0)
-    (map-set ai-suggestion-status service-id
-      {
-        suggestions-requested: request-ai-suggestions,
-        suggestions-generated: false,
-        suggestion-count: u0
-      }
-    )
-    
-    ;; Update client profile
-    (let ((profile-updated (update-client-profile payment-amount)))
-      (var-set next-service-id (+ service-id u1))
-      
-      (print {
-        type: "service-request-created",
-        service-id: service-id,
         client: tx-sender,
-        skill-category: skill-category,
-        payment-amount: payment-amount,
-        ai-suggestions-requested: request-ai-suggestions,
-        application-deadline: application-deadline,
-        block: block-height
-      })
-      
-      (ok service-id)
+        fee-paid: JOB-CREATION-FEE-STX,
+        created-at: block-height,
+        status: u0, ;; posted
+        escrow-created: false,
+        escrow-id: none,
+        accepted-freelancer: none,
+        acceptance-block: none
+      }
     )
+    
+    ;; Update stats
+    (var-set total-jobs-created (+ (var-get total-jobs-created) u1))
+    (var-set total-fees-collected (+ (var-get total-fees-collected) JOB-CREATION-FEE-STX))
+    
+    (print {
+      type: "job-creation-fee-paid",
+      external-job-id: external-job-id,
+      client: tx-sender,
+      fee-paid: JOB-CREATION-FEE-STX,
+      status: "posted-awaiting-applications"
+    })
+    
+    (ok true)
   )
 )
 
-;; AI ORACLE CREATES SUGGESTION WITH SUCCESS PREDICTION
-(define-public (create-ai-suggested-application-with-prediction
-  (service-id uint)
-  (suggested-provider principal)
-  (estimated-timeline uint)
-  (success-probability uint)
-  (risk-factors (list 10 (string-ascii 50)))
-  (recommended-adjustments (string-ascii 300))
-  (initial-skill-score uint)
+;; Accept freelancer and create escrow in one transaction
+;; Client must deposit sBTC to accept freelancer
+(define-public (accept-freelancer-with-escrow
+  (external-job-id (string-ascii 64))
+  (freelancer principal)
+  (sbtc-amount uint)
 )
   (let 
     (
-      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
-      (provider-profile (unwrap! (map-get? skill-provider-profiles suggested-provider) (err u105)))
-      (current-app-count (default-to u0 (map-get? service-application-count service-id)))
-      (ai-status (unwrap! (map-get? ai-suggestion-status service-id) (err u101)))
+      (job-payment (unwrap! (map-get? job-payments external-job-id) ERR-NOT-FOUND))
     )
     ;; Input validation
-    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
-    (asserts! (is-eq (get current-status service-info) u0) (err u102))
-    (asserts! (< block-height (get application-deadline service-info)) (err u106))
-    (asserts! (is-eq (get verification-status provider-profile) u1) (err u105))
-    (asserts! (get suggestions-requested ai-status) (err u102))
-    (asserts! (< current-app-count MAX-APPLICATIONS-PER-SERVICE) (err u117))
-    (asserts! (not (is-eq suggested-provider (get client-address service-info))) (err u100))
-    (asserts! (is-none (map-get? service-applications { service-id: service-id, provider: suggested-provider })) (err u104))
+    (asserts! (is-valid-job-id external-job-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-principal freelancer) ERR-INVALID-INPUT)
+    (asserts! (is-valid-sbtc-amount sbtc-amount) ERR-INVALID-AMOUNT)
     
-    ;; Validate untrusted inputs
-    (asserts! (is-valid-principal suggested-provider) (err u117))
-    (asserts! (is-valid-timeline estimated-timeline) (err u117))
-    (asserts! (is-valid-probability success-probability) (err u117))
-    (asserts! (is-valid-skill-score initial-skill-score) (err u117))
-    (asserts! (is-valid-risk-factors risk-factors) (err u117))
-    (asserts! (is-valid-adjustments recommended-adjustments) (err u117))
+    ;; Authorization - only job creator can accept freelancer
+    (asserts! (is-eq tx-sender (get client job-payment)) ERR-UNAUTHORIZED)
+    (asserts! (is-eq (get status job-payment) u0) ERR-INVALID-STATE) ;; Must be posted
+    (asserts! (not (get escrow-created job-payment)) ERR-DUPLICATE)
     
-    ;; SUCCESS PROBABILITY FILTER - Only suggest if >80% success rate
-    (asserts! (>= success-probability MIN-SUCCESS-PROBABILITY) (err u132))
-    
-    ;; Store success prediction
-    (map-set project-success-predictions service-id
-      {
-        success-probability: success-probability,
-        risk-factors: risk-factors,
-        recommended-adjustments: recommended-adjustments,
-        prediction-timestamp: block-height,
-        confidence-score: u90
-      }
-    )
-    
-    ;; Store initial competency assessment
-    (map-set competency-assessments { service-id: service-id, provider: suggested-provider }
-      {
-        initial-skill-score: initial-skill-score,
-        demonstrated-competency: initial-skill-score, ;; Starts same as initial
-        competency-verified: false,
-        price-adjustment-factor: u10000, ;; Starts at 100% (no adjustment)
-        assessment-timestamp: block-height,
-        verification-evidence: none
-      }
-    )
-    
-    ;; Create AI suggested application
-    (map-set service-applications 
-      { service-id: service-id, provider: suggested-provider }
-      {
-        application-message: "AI suggested provider with high success probability",
-        proposed-timeline: estimated-timeline,
-        proposed-price: none,
-        portfolio-links: (list "" "" "" "" ""),
-        application-timestamp: block-height,
-        application-status: u0,
-        estimated-delivery: (+ block-height estimated-timeline),
-        provider-questions: none,
-        is-ai-suggested: true
-      }
-    )
-    
-    ;; Update counters
-    (map-set service-application-count service-id (+ current-app-count u1))
-    (map-set ai-suggestion-status service-id
-      (merge ai-status {
-        suggestion-count: (+ (get suggestion-count ai-status) u1)
-      })
-    )
-    
-    ;; Update provider stats
-    (map-set skill-provider-profiles suggested-provider
-      (merge provider-profile {
-        active-applications: (+ (get active-applications provider-profile) u1)
-      })
-    )
-    
-    (print {
-      type: "ai-suggested-application-with-prediction",
-      service-id: service-id,
-      suggested-provider: suggested-provider,
-      success-probability: success-probability,
-      initial-skill-score: initial-skill-score,
-      estimated-timeline: estimated-timeline,
-      total-applications: (+ current-app-count u1),
-      block: block-height
-    })
-    
-    (ok true)
-  )
-)
-
-;; MARK AI SUGGESTIONS AS COMPLETE
-(define-public (complete-ai-suggestions (service-id uint))
-  (let ((ai-status (unwrap! (map-get? ai-suggestion-status service-id) (err u101))))
-    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
-    (asserts! (get suggestions-requested ai-status) (err u102))
-    (asserts! (not (get suggestions-generated ai-status)) (err u104))
-    
-    ;; Mark suggestions as complete
-    (map-set ai-suggestion-status service-id
-      (merge ai-status { suggestions-generated: true })
-    )
-    
-    ;; Update service
-    (let ((service-info (unwrap! (map-get? service-requests service-id) (err u101))))
-      (map-set service-requests service-id
-        (merge service-info { ai-suggestions-generated: true })
-      )
-    )
-    
-    (print {
-      type: "ai-suggestions-completed",
-      service-id: service-id,
-      suggestion-count: (get suggestion-count ai-status),
-      block: block-height
-    })
-    
-    (ok true)
-  )
-)
-
-;; PROVIDER APPLIES TO SERVICE WITH SKILL TOKEN FEE
-(define-public (apply-to-service
-  (service-id uint)
-  (application-message (string-ascii 300))
-  (proposed-timeline uint)
-  (portfolio-links (list 5 (string-ascii 200)))
-  (proposed-price (optional uint)) ;; in microSTX
-  (provider-questions (optional (string-ascii 200)))
-)
-  (let 
-    (
-      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
-      (provider-profile (unwrap! (map-get? skill-provider-profiles tx-sender) (err u105)))
-      (current-app-count (default-to u0 (map-get? service-application-count service-id)))
-      (provider-apps (default-to (list) (map-get? provider-applications tx-sender)))
-    )
-    ;; Input validation
-    (asserts! (is-eq (get current-status service-info) u0) (err u102))
-    (asserts! (< block-height (get application-deadline service-info)) (err u106))
-    (asserts! (is-eq (get verification-status provider-profile) u1) (err u105))
-    (asserts! (not (is-eq tx-sender (get client-address service-info))) (err u100))
-    (asserts! (is-none (map-get? service-applications { service-id: service-id, provider: tx-sender })) (err u104))
-    (asserts! (is-valid-string application-message u10 u300) (err u117))
-    (asserts! (< current-app-count MAX-APPLICATIONS-PER-SERVICE) (err u117))
-    (asserts! (< (get active-applications provider-profile) u5) (err u117))
-    
-    ;; Validate untrusted inputs
-    (asserts! (is-valid-timeline proposed-timeline) (err u117))
-    (asserts! (is-valid-portfolio-links portfolio-links) (err u117))
-    (asserts! (is-valid-optional-price proposed-price) (err u110))
-    (asserts! (is-valid-optional-questions provider-questions) (err u117))
-    
-    ;; Additional validation for proposed price if provided
-    (match proposed-price
-      some-price (begin
-        (asserts! (and (>= some-price (/ (get payment-amount service-info) u2)) 
-                       (<= some-price (* (get payment-amount service-info) u2))) (err u110))
-      )
-      true
-    )
-    
-    ;; SPEND SKILL TOKENS FOR APPLICATION FEE
-    (try! (spend-skill-tokens-for-application tx-sender))
-    
-    ;; Create application with validated inputs
-    (map-set service-applications 
-      { service-id: service-id, provider: tx-sender }
-      {
-        application-message: application-message,
-        proposed-timeline: proposed-timeline,
-        proposed-price: proposed-price,
-        portfolio-links: portfolio-links,
-        application-timestamp: block-height,
-        application-status: u0,
-        estimated-delivery: (+ block-height proposed-timeline),
-        provider-questions: provider-questions,
-        is-ai-suggested: false
-      }
-    )
-    
-    ;; Update counters
-    (map-set service-application-count service-id (+ current-app-count u1))
-    (map-set provider-applications tx-sender 
-      (unwrap! (as-max-len? (append provider-apps service-id) u20) (err u117)))
-    
-    ;; Update provider stats
-    (map-set skill-provider-profiles tx-sender
-      (merge provider-profile {
-        active-applications: (+ (get active-applications provider-profile) u1)
-      })
-    )
-    
-    (print {
-      type: "provider-applied-with-skill-fee",
-      service-id: service-id,
-      provider: tx-sender,
-      timeline: proposed-timeline,
-      proposed-price: proposed-price,
-      application-count: (+ current-app-count u1),
-      skill-tokens-spent: u1000000, ;; 1 SKILL token
-      block: block-height
-    })
-    
-    (ok true)
-  )
-)
-
-;; CLIENT SELECTS PROVIDER
-(define-public (select-provider
-  (service-id uint)
-  (chosen-provider principal)
-  (accept-proposed-price bool)
-)
-  (let 
-    (
-      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
-      (application (unwrap! (map-get? service-applications 
-        { service-id: service-id, provider: chosen-provider }) (err u101)))
-      (escrow-info (unwrap! (map-get? payment-escrow-system service-id) (err u101)))
-    )
-    ;; Input validation
-    (asserts! (is-eq tx-sender (get client-address service-info)) (err u100))
-    (asserts! (is-eq (get current-status service-info) u0) (err u102))
-    (asserts! (is-eq (get application-status application) u0) (err u102))
-    
-    ;; Validate untrusted inputs
-    (asserts! (is-valid-principal chosen-provider) (err u117))
-    
-    ;; Handle price adjustment
-    (let ((final-payout-amount 
-      (if (and accept-proposed-price (is-some (get proposed-price application)))
-        (unwrap-panic (get proposed-price application))
-        (get payment-amount service-info))))
+    ;; Create escrow through escrow contract (this locks the sBTC)
+    (match (contract-call? .escrow create-escrow 
+      external-job-id 
+      tx-sender 
+      freelancer 
+      sbtc-amount)
       
-      ;; Update service with chosen provider
-      (map-set service-requests service-id
-        (merge service-info {
-          provider-address: (some chosen-provider),
-          current-status: u1,
-          payment-amount: final-payout-amount
-        })
-      )
-      
-      ;; Update escrow if needed
-      (if (not (is-eq final-payout-amount (get payment-amount service-info)))
-        (map-set payment-escrow-system service-id
-          (merge escrow-info {
-            provider-payout-amount: final-payout-amount
-          }))
-        true
-      )
-      
-      ;; Update chosen application
-      (map-set service-applications 
-        { service-id: service-id, provider: chosen-provider }
-        (merge application { application-status: u1 }))
-      
-      ;; Update provider stats
-      (let ((provider-profile (unwrap! (map-get? skill-provider-profiles chosen-provider) (err u105))))
-        (map-set skill-provider-profiles chosen-provider
-          (merge provider-profile {
-            active-applications: (- (get active-applications provider-profile) u1)
-          })
-        )
-      )
-      
-      (print {
-        type: "provider-selected",
-        service-id: service-id,
-        chosen-provider: chosen-provider,
-        final-price: final-payout-amount,
-        was-ai-suggested: (get is-ai-suggested application),
-        block: block-height
-      })
-      
-      (ok true)
-    )
-  )
-)
-
-;; WITHDRAW APPLICATION
-(define-public (withdraw-application (service-id uint))
-  (let ((application (unwrap! (map-get? service-applications 
-    { service-id: service-id, provider: tx-sender }) (err u101))))
-    
-    ;; Validate input
-    (asserts! (> service-id u0) (err u117))
-    (asserts! (is-eq (get application-status application) u0) (err u102))
-    
-    (map-set service-applications 
-      { service-id: service-id, provider: tx-sender }
-      (merge application { application-status: u3 }))
-    
-    ;; Update provider stats
-    (let ((provider-profile (unwrap! (map-get? skill-provider-profiles tx-sender) (err u105))))
-      (map-set skill-provider-profiles tx-sender
-        (merge provider-profile {
-          active-applications: (- (get active-applications provider-profile) u1)
-        })
-      )
-    )
-    
-    (ok true)
-  )
-)
-
-;; START SERVICE SESSION
-(define-public (start-service-session
-  (service-id uint)
-  (video-session-url (string-ascii 200))
-)
-  (let 
-    (
-      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
-      (provider (unwrap! (get provider-address service-info) (err u101)))
-    )
-    (asserts! (is-valid-string video-session-url u1 u200) (err u117))
-    (asserts! (or (is-eq tx-sender (get client-address service-info)) (is-eq tx-sender provider)) (err u100))
-    (asserts! (is-eq (get current-status service-info) u1) (err u102))
-    
-    (map-set service-requests service-id
-      (merge service-info {
-        current-status: u2,
-        video-session-url: (some video-session-url)
-      })
-    )
-    
-    (ok true)
-  )
-)
-
-;; COMPLETE SERVICE
-(define-public (complete-service-delivery
-  (service-id uint)
-  (completion-evidence (string-ascii 200))
-)
-  (let 
-    (
-      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
-      (provider (unwrap! (get provider-address service-info) (err u101)))
-    )
-    (asserts! (is-valid-string completion-evidence u1 u200) (err u117))
-    (asserts! (is-eq tx-sender provider) (err u100))
-    (asserts! (is-eq (get current-status service-info) u2) (err u102))
-    
-    (map-set service-requests service-id
-      (merge service-info {
-        current-status: u3,
-        completion-evidence: (some completion-evidence)
-      })
-    )
-    
-    ;; Release payment and update stats
-    (try! (release-stx-payment service-id provider))
-    (let ((stats-updated (update-provider-stats provider service-id)))
-      (ok true)
-    )
-  )
-)
-
-;; RATE PROVIDER
-(define-public (rate-service-provider (service-id uint) (rating uint))
-  (let 
-    (
-      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
-      (provider (unwrap! (get provider-address service-info) (err u101)))
-    )
-    (asserts! (is-valid-rating rating) (err u107))
-    (asserts! (is-eq tx-sender (get client-address service-info)) (err u100))
-    (asserts! (is-eq (get current-status service-info) u3) (err u102))
-    (asserts! (is-none (get client-rating service-info)) (err u104))
-    
-    (map-set service-requests service-id
-      (merge service-info { client-rating: (some rating) })
-    )
-    
-    (let ((rating-updated (update-provider-rating provider rating)))
-      (ok true)
-    )
-  )
-)
-
-;; HELPER FUNCTIONS
-(define-private (release-stx-payment (service-id uint) (provider principal))
-  (let ((escrow-info (unwrap! (map-get? payment-escrow-system service-id) (err u101))))
-    (try! (as-contract (stx-transfer? 
-      (get provider-payout-amount escrow-info) tx-sender provider)))
-    (try! (as-contract (stx-transfer? 
-      (get platform-fee-amount escrow-info) tx-sender (var-get platform-treasury))))
-    
-    (map-set payment-escrow-system service-id
-      (merge escrow-info { funds-locked-status: false })
-    )
-    (ok true)
-  )
-)
-
-(define-private (update-client-profile (amount uint))
-  (let ((current-profile (default-to 
-    {
-      total-services-requested: u0,
-      total-amount-spent: u0,
-      average-provider-rating: u0,
-      payment-defaults: u0,
-      account-creation-block: block-height,
-      kyc-status: false
-    }
-    (map-get? client-profiles tx-sender))))
-    
-    (map-set client-profiles tx-sender
-      (merge current-profile {
-        total-services-requested: (+ (get total-services-requested current-profile) u1),
-        total-amount-spent: (+ (get total-amount-spent current-profile) amount)
-      })
-    )
-    (ok true)
-  )
-)
-
-(define-private (update-provider-stats (provider principal) (service-id uint))
-  (let ((current-profile (map-get? skill-provider-profiles provider)))
-    (match current-profile
-      profile
-      (let ((escrow-info (map-get? payment-escrow-system service-id)))
-        (match escrow-info
-          escrow
-          (begin
-            (map-set skill-provider-profiles provider
-              (merge profile {
-                total-services-completed: (+ (get total-services-completed profile) u1),
-                total-earnings: (+ (get total-earnings profile) (get provider-payout-amount escrow))
-              })
-            )
-            (ok true)
-          )
-          (ok false)
-        )
-      )
-      (ok false)
-    )
-  )
-)
-
-(define-private (update-provider-rating (provider principal) (new-rating uint))
-  (let ((current-profile (map-get? skill-provider-profiles provider)))
-    (match current-profile
-      profile
-      (let 
-        (
-          (total-rating-points (* (get current-rating profile) (get rating-count profile)))
-          (new-rating-count (+ (get rating-count profile) u1))
-          (new-average-rating (/ (+ total-rating-points new-rating) new-rating-count))
-        )
-        (map-set skill-provider-profiles provider
-          (merge profile {
-            current-rating: new-average-rating,
-            rating-count: new-rating-count
-          })
-        )
-        (ok true)
-      )
-      (ok false)
-    )
-  )
-)
-
-;; INITIALIZE SERVICE SUGGESTION QUOTA
-(define-public (initialize-service-suggestion-quota (service-id uint))
-  (let 
-    (
-      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
-      (ai-status (unwrap! (map-get? ai-suggestion-status service-id) (err u101)))
-    )
-    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
-    (asserts! (get suggestions-requested ai-status) (err u102))
-    (asserts! (not (get suggestions-generated ai-status)) (err u104))
-    
-    ;; Calculate quotas: 30% new providers, 70% experienced
-    (let 
-      (
-        (total-target MAX-TOTAL-SUGGESTIONS)
-        (calculated-new-provider-target (/ (* total-target NEW-PROVIDER-QUOTA-PERCENTAGE) u100))
-        (new-provider-target (get-max calculated-new-provider-target MIN-NEW-PROVIDER-SUGGESTIONS))
-        (experienced-target (- total-target new-provider-target))
-      )
-      
-      (map-set service-suggestion-quotas service-id
-        {
-          total-suggestions-target: total-target,
-          new-provider-suggestions-target: new-provider-target,
-          experienced-provider-suggestions-target: experienced-target,
-          new-provider-suggestions-made: u0,
-          experienced-provider-suggestions-made: u0,
-          quota-fulfilled: false
-        }
-      )
-      
-      (print {
-        type: "suggestion-quota-initialized",
-        service-id: service-id,
-        new-provider-quota: new-provider-target,
-        experienced-provider-quota: experienced-target,
-        total-quota: total-target,
-        block: block-height
-      })
-      
-      (ok {
-        new-provider-slots: new-provider-target,
-        experienced-slots: experienced-target
-      })
-    )
-  )
-)
-
-;; QUOTA-AWARE AI SUGGESTION FOR EXPERIENCED PROVIDERS
-(define-public (create-experienced-provider-suggestion
-  (service-id uint)
-  (suggested-provider principal)
-  (estimated-timeline uint)
-  (success-probability uint)
-  (risk-factors (list 10 (string-ascii 50)))
-  (recommended-adjustments (string-ascii 300))
-  (initial-skill-score uint)
-)
-  (let 
-    (
-      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
-      (provider-profile (unwrap! (map-get? skill-provider-profiles suggested-provider) (err u105)))
-      (current-app-count (default-to u0 (map-get? service-application-count service-id)))
-      (ai-status (unwrap! (map-get? ai-suggestion-status service-id) (err u101)))
-      (quota-info (unwrap! (map-get? service-suggestion-quotas service-id) (err u101)))
-    )
-    ;; Input validation
-    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
-    (asserts! (is-eq (get current-status service-info) u0) (err u102))
-    (asserts! (< block-height (get application-deadline service-info)) (err u106))
-    (asserts! (is-eq (get verification-status provider-profile) u1) (err u105))
-    (asserts! (get suggestions-requested ai-status) (err u102))
-    (asserts! (< current-app-count MAX-APPLICATIONS-PER-SERVICE) (err u117))
-    (asserts! (not (is-eq suggested-provider (get client-address service-info))) (err u100))
-    (asserts! (is-none (map-get? service-applications { service-id: service-id, provider: suggested-provider })) (err u104))
-    
-    ;; Validate untrusted inputs
-    (asserts! (is-valid-principal suggested-provider) (err u117))
-    (asserts! (is-valid-timeline estimated-timeline) (err u117))
-    (asserts! (is-valid-probability success-probability) (err u117))
-    (asserts! (is-valid-skill-score initial-skill-score) (err u117))
-    (asserts! (is-valid-risk-factors risk-factors) (err u117))
-    (asserts! (is-valid-adjustments recommended-adjustments) (err u117))
-    
-    ;; CHECK EXPERIENCED PROVIDER QUOTA
-    (asserts! (< (get experienced-provider-suggestions-made quota-info) 
-                 (get experienced-provider-suggestions-target quota-info)) (err u133))
-    
-    ;; EXPERIENCED PROVIDER THRESHOLD (80%)
-    (asserts! (>= success-probability MIN-SUCCESS-PROBABILITY) (err u132))
-    
-    ;; Ensure this is NOT a new provider
-    (asserts! (is-none (map-get? new-provider-trials suggested-provider)) (err u134))
-    
-    ;; Store success prediction
-    (map-set project-success-predictions service-id
-      {
-        success-probability: success-probability,
-        risk-factors: risk-factors,
-        recommended-adjustments: recommended-adjustments,
-        prediction-timestamp: block-height,
-        confidence-score: u90
-      }
-    )
-    
-    ;; Store competency assessment
-    (map-set competency-assessments { service-id: service-id, provider: suggested-provider }
-      {
-        initial-skill-score: initial-skill-score,
-        demonstrated-competency: initial-skill-score,
-        competency-verified: false,
-        price-adjustment-factor: u10000,
-        assessment-timestamp: block-height,
-        verification-evidence: none
-      }
-    )
-    
-    ;; Create application
-    (map-set service-applications 
-      { service-id: service-id, provider: suggested-provider }
-      {
-        application-message: "EXPERIENCED PROVIDER: High success rate with proven track record",
-        proposed-timeline: estimated-timeline,
-        proposed-price: none,
-        portfolio-links: (list "" "" "" "" ""),
-        application-timestamp: block-height,
-        application-status: u0,
-        estimated-delivery: (+ block-height estimated-timeline),
-        provider-questions: none,
-        is-ai-suggested: true
-      }
-    )
-    
-    ;; Update quotas and counters
-    (map-set service-suggestion-quotas service-id
-      (merge quota-info {
-        experienced-provider-suggestions-made: (+ (get experienced-provider-suggestions-made quota-info) u1)
-      })
-    )
-    
-    (map-set service-application-count service-id (+ current-app-count u1))
-    (map-set ai-suggestion-status service-id
-      (merge ai-status {
-        suggestion-count: (+ (get suggestion-count ai-status) u1)
-      })
-    )
-    
-    (map-set skill-provider-profiles suggested-provider
-      (merge provider-profile {
-        active-applications: (+ (get active-applications provider-profile) u1)
-      })
-    )
-    
-    (print {
-      type: "experienced-provider-suggested",
-      service-id: service-id,
-      suggested-provider: suggested-provider,
-      success-probability: success-probability,
-      initial-skill-score: initial-skill-score,
-      quota-slot: "experienced",
-      experienced-suggestions-made: (+ (get experienced-provider-suggestions-made quota-info) u1),
-      block: block-height
-    })
-    
-    (ok true)
-  )
-)
-
-;; NEW PROVIDER ONBOARDING SYSTEM
-(define-public (start-new-provider-onboarding
-  (skills-to-verify (list 5 (string-ascii 50)))
-  (portfolio-links (list 5 (string-ascii 200)))
-  (external-verifications (list 3 (string-ascii 300))) ;; GitHub, LinkedIn, etc.
-)
-  (let ((provider-profile (map-get? skill-provider-profiles tx-sender)))
-    (asserts! (is-some provider-profile) (err u105)) ;; Must have basic profile
-    (asserts! (and (> (len skills-to-verify) u0) (<= (len skills-to-verify) u5)) (err u117))
-    
-    ;; Initialize new provider trial system
-    (map-set new-provider-trials tx-sender
-      {
-        trial-projects-completed: u0,
-        trial-success-rate: u0,
-        skill-verification-score: u0,
-        portfolio-verification-score: u0,
-        external-verification-score: u0,
-        trial-period-active: true,
-        trial-start-block: block-height
-      }
-    )
-    
-    (print {
-      type: "new-provider-onboarding-started",
-      provider: tx-sender,
-      skills-to-verify: skills-to-verify,
-      portfolio-count: (len portfolio-links),
-      external-verifications: external-verifications,
-      block: block-height
-    })
-    
-    (ok true)
-  )
-)
-
-;; AI GIVES SIMPLE SKILL BOOST (Optional)
-(define-public (give-skill-verification-boost
-  (provider principal)
-  (skill (string-ascii 50))
-  (boost-amount uint) ;; 5-25 point boost
-)
-  (let 
-    (
-      (challenge (map-get? skill-verification-challenges { provider: provider, skill: skill }))
-      (trial-data (unwrap! (map-get? new-provider-trials provider) (err u101)))
-    )
-    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
-    (asserts! (is-some challenge) (err u101))
-    
-    ;; Validate untrusted inputs
-    (asserts! (is-valid-principal provider) (err u117))
-    (asserts! (is-valid-string skill u1 u50) (err u117))
-    (asserts! (is-valid-boost-amount boost-amount) (err u117))
-    
-    (match challenge
-      challenge-data
+      escrow-id
       (begin
-        ;; Update challenge status
-        (map-set skill-verification-challenges { provider: provider, skill: skill }
-          (merge challenge-data {
-            ai-assessment-score: (some boost-amount),
-            verification-status: u1, ;; passed
-            completion-timestamp: (some block-height)
+        ;; Update job payment record - mark as accepted with escrow
+        (map-set job-payments external-job-id
+          (merge job-payment {
+            status: u1, ;; accepted-with-escrow
+            escrow-created: true,
+            escrow-id: (some escrow-id),
+            accepted-freelancer: (some freelancer),
+            acceptance-block: (some block-height)
           })
         )
         
-        ;; Give skill boost to provider
-        (let ((current-score (get skill-verification-score trial-data)))
-          (map-set new-provider-trials provider
-            (merge trial-data {
-              skill-verification-score: (+ current-score boost-amount)
-            })
-          )
+        ;; Create freelancer acceptance record - Visible to freelancer
+        (map-set freelancer-acceptances 
+          { job-id: external-job-id, freelancer: freelancer }
+          {
+            accepted-at: block-height,
+            escrow-id: escrow-id,
+            client: tx-sender,
+            sbtc-amount: sbtc-amount,
+            visible-to-freelancer: true ;; Key: only true after escrow funded
+          }
         )
         
         (print {
-          type: "optional-skill-boost-given",
-          provider: provider,
-          skill: skill,
-          boost-amount: boost-amount,
-          new-total-score: (+ (get skill-verification-score trial-data) boost-amount),
-          block: block-height
+          type: "freelancer-accepted-with-escrow",
+          external-job-id: external-job-id,
+          client: tx-sender,
+          freelancer: freelancer,
+          escrow-id: escrow-id,
+          sbtc-amount: sbtc-amount,
+          status: "funds-locked-freelancer-can-start-work",
+          freelancer-notification: "You have been accepted! Funds are secured in escrow."
         })
         
-        (ok boost-amount)
+        (ok escrow-id)
       )
-      (err u101)
+      error-data (err error-data)
     )
   )
 )
 
-;; CREATE PROVIDER PROFILE
-(define-public (create-provider-profile (initial-skills (list 15 (string-ascii 50))))
-  (let ((skills-len (len initial-skills)))
-    (asserts! (and (> skills-len u0) (<= skills-len u15)) (err u117))
-    (asserts! (is-none (map-get? skill-provider-profiles tx-sender)) (err u104))
-    
-    (map-set skill-provider-profiles tx-sender
-      {
-        verified-skills: initial-skills,
-        verification-status: u0,
-        verification-timestamp: u0,
-        total-services-completed: u0,
-        total-earnings: u0,
-        current-rating: u0,
-        rating-count: u0,
-        profile-creation-block: block-height,
-        kyc-verified: false,
-        response-rate: u100,
-        avg-delivery-time: u360,
-        active-applications: u0
-      }
-    )
-    
-    (ok true)
-  )
-)
-
-(define-public (update-provider-verification-status
-  (provider principal)
-  (approved bool)
-)
-  (let ((current-profile (unwrap! (map-get? skill-provider-profiles provider) (err u101))))
-    (asserts! (not (is-eq provider tx-sender)) (err u117))
-    (asserts! (is-eq tx-sender (var-get oracle-contract)) (err u100))
-    
-    (map-set skill-provider-profiles provider
-      (merge current-profile {
-        verification-status: (if approved u1 u2),
-        verification-timestamp: block-height
-      })
-    )
-    
-    (ok approved)
-  )
-)
-
-;; DISPUTE RESOLUTION
-(define-public (initiate-dispute (service-id uint) (reason (string-ascii 200)))
-  (let ((service-info (unwrap! (map-get? service-requests service-id) (err u101))))
-    (asserts! (is-valid-string reason u1 u200) (err u117))
-    (asserts! (or 
-      (is-eq tx-sender (get client-address service-info))
-      (is-eq tx-sender (unwrap-panic (get provider-address service-info)))
-    ) (err u100))
-    (asserts! (is-eq (get current-status service-info) u2) (err u102))
-    
-    (map-set service-requests service-id
-      (merge service-info { current-status: u4 })
-    )
-    
-    (ok true)
-  )
-)
-
-(define-public (resolve-dispute
-  (service-id uint)
-  (favor-client bool)
-  (refund-percentage uint)
+;; Check if freelancer has been accepted for a specific job
+;; This is how freelancers know they've been hired
+(define-read-only (check-freelancer-acceptance 
+  (external-job-id (string-ascii 64))
+  (freelancer principal)
 )
   (let 
     (
-      (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
-      (escrow-info (unwrap! (map-get? payment-escrow-system service-id) (err u101)))
+      (acceptance-key { job-id: external-job-id, freelancer: freelancer })
+      (acceptance-data (map-get? freelancer-acceptances acceptance-key))
     )
-    (asserts! (<= refund-percentage u100) (err u110))
-    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
-    (asserts! (is-eq (get current-status service-info) u4) (err u102))
-    
-    (let 
-      (
-        (total-amount (get total-escrowed-amount escrow-info))
-        (refund-amount (/ (* total-amount refund-percentage) u100))
-        (provider-amount (- total-amount refund-amount))
-      )
-      (if favor-client
-        (begin
-          (try! (as-contract (stx-transfer? refund-amount tx-sender (get client-address service-info))))
-          (try! (as-contract (stx-transfer? provider-amount tx-sender (unwrap-panic (get provider-address service-info)))))
-        )
-        (begin
-          (try! (as-contract (stx-transfer? refund-amount tx-sender (get client-address service-info))))
-          (try! (as-contract (stx-transfer? provider-amount tx-sender (unwrap-panic (get provider-address service-info)))))
-        )
-      )
-      
-      (map-set service-requests service-id
-        (merge service-info { current-status: u3 })
-      )
-      
-      (map-set payment-escrow-system service-id
-        (merge escrow-info { funds-locked-status: false })
-      )
-      
-      (ok true)
-    )
-  )
-)
-
-;; SKILL TOKEN INTEGRATION FUNCTIONS
-(define-public (check-application-eligibility (provider principal) (service-id uint))
-  (let 
-    (
-      (service-info (map-get? service-requests service-id))
-      (provider-profile (map-get? skill-provider-profiles provider))
-      (skill-contract (var-get skill-token-contract))
-    )
-    (match service-info
-      service-data
-      (match provider-profile
-        profile-data
+    (match acceptance-data
+      acceptance
+      (if (get visible-to-freelancer acceptance)
         (ok {
-          service-exists: true,
-          service-open: (is-eq (get current-status service-data) u0),
-          application-deadline-passed: (>= block-height (get application-deadline service-data)),
-          provider-verified: (is-eq (get verification-status profile-data) u1),
-          already-applied: (is-some (map-get? service-applications { service-id: service-id, provider: provider })),
-          is-service-owner: (is-eq provider (get client-address service-data)),
-          has-skill-tokens: (if (is-eq skill-contract tx-sender) 
-            true ;; Skip check if contract not set
-            (unwrap-panic (contract-call? .skills-token can-afford-application provider))),
-          application-cost: u1000000, ;; 1 SKILL token
-          can-apply: (and 
-            (is-eq (get current-status service-data) u0)
-            (< block-height (get application-deadline service-data))
-            (is-eq (get verification-status profile-data) u1)
-            (is-none (map-get? service-applications { service-id: service-id, provider: provider }))
-            (not (is-eq provider (get client-address service-data)))
-          )
+          accepted: true,
+          acceptance-details: (some acceptance),
+          message: "Congratulations! You have been hired. Funds are secured in escrow.",
+          can-start-work: true
         })
-        (err u105)
+        (ok {
+          accepted: false,
+          acceptance-details: none,
+          message: "No acceptance found or escrow not yet funded",
+          can-start-work: false
+        })
       )
-      (err u101)
-    )
-  )
-)
-
-(define-public (get-user-application-info (user principal))
-  (let ((skill-contract (var-get skill-token-contract)))
-    (ok {
-      skill-token-balance: (if (is-eq skill-contract tx-sender)
-        u0 ;; Return 0 if contract not set
-        (unwrap-panic (contract-call? .skills-token get-balance user))),
-      applications-affordable: (if (is-eq skill-contract tx-sender)
-        u999 ;; Return high number if contract not set
-        (/ (unwrap-panic (contract-call? .skills-token get-balance user)) u1000000)),
-      application-cost-skill: u1000000, ;; 1 SKILL token
-      application-cost-stx: u100000, ;; 0.1 STX to buy 1 SKILL
-      can-afford-application: (if (is-eq skill-contract tx-sender)
-        true ;; Allow if contract not set
-        (unwrap-panic (contract-call? .skills-token can-afford-application user))),
-      stx-balance: (stx-get-balance user),
-      provider-profile: (map-get? skill-provider-profiles user)
-    })
-  )
-)
-
-(define-read-only (estimate-application-costs (num-applications uint))
-  {
-    applications: num-applications,
-    skill-tokens-needed: (* num-applications u1000000), ;; 1 SKILL per application
-    stx-cost-to-buy-tokens: (* num-applications u100000), ;; 0.1 STX per SKILL token
-    cost-per-application: "0.1 STX",
-    savings-vs-competitors: "Massive! Other platforms charge 15-20% of project value",
-    platform-advantage: "Fixed 0.1 STX fee vs percentage-based fees"
-  }
-)
-
-;; READ-ONLY FUNCTIONS
-(define-read-only (get-service-request (service-id uint))
-  (map-get? service-requests service-id)
-)
-
-(define-read-only (get-service-with-applications (service-id uint))
-  (let ((service (map-get? service-requests service-id)))
-    (match service
-      service-data
       (ok {
-        service: service-data,
-        application-count: (default-to u0 (map-get? service-application-count service-id)),
-        ai-status: (map-get? ai-suggestion-status service-id),
-        applications-open: (< block-height (get application-deadline service-data)),
-        selection-required: (get client-selection-required service-data)
+        accepted: false,
+        acceptance-details: none,
+        message: "You have not been accepted for this job",
+        can-start-work: false
       })
-      (err u101)
     )
   )
 )
 
-(define-read-only (get-provider-application (service-id uint) (provider principal))
-  (map-get? service-applications { service-id: service-id, provider: provider })
+;; Get all job acceptances for a freelancer (their active jobs)
+(define-read-only (get-freelancer-active-jobs (freelancer principal))
+  {
+    instructions: "Query freelancer-acceptances map with freelancer address",
+    example-key: { job-id: "job-12345", freelancer: freelancer },
+    note: "Off-chain service should index all acceptance events for each freelancer"
+  }
 )
 
-(define-read-only (get-application-count (service-id uint))
-  (default-to u0 (map-get? service-application-count service-id))
-)
-
-(define-read-only (get-provider-applications (provider principal))
-  (default-to (list) (map-get? provider-applications provider))
-)
-
-(define-read-only (get-skill-provider-profile (provider principal))
-  (map-get? skill-provider-profiles provider)
-)
-
-(define-read-only (get-enhanced-provider-profile (provider principal))
-  (let ((profile (map-get? skill-provider-profiles provider)))
-    (match profile
-      profile-data
-      (ok {
-        profile: profile-data,
-        active-applications: (get active-applications profile-data),
-        rating-display: (/ (get current-rating profile-data) u10),
-        experience-level: (if (< (get total-services-completed profile-data) u5)
-          "Beginner"
-          (if (< (get total-services-completed profile-data) u20)
-            "Intermediate" 
-            "Expert"))
-      })
-      (err u101)
+;; Freelancer marks job as completed (Step 1 of 2)
+(define-public (freelancer-mark-completed (external-job-id (string-ascii 64)))
+  (let 
+    (
+      (job-payment (unwrap! (map-get? job-payments external-job-id) ERR-NOT-FOUND))
+      (escrow-id (unwrap! (get escrow-id job-payment) ERR-NOT-FOUND))
+      (acceptance-key { job-id: external-job-id, freelancer: tx-sender })
+      (acceptance-data (unwrap! (map-get? freelancer-acceptances acceptance-key) ERR-UNAUTHORIZED))
     )
-  )
-)
-
-(define-read-only (get-client-profile (client principal))
-  (map-get? client-profiles client)
-)
-
-(define-read-only (get-escrow-details (service-id uint))
-  (map-get? payment-escrow-system service-id)
-)
-
-(define-read-only (get-ai-suggestion-status (service-id uint))
-  (map-get? ai-suggestion-status service-id)
-)
-
-(define-read-only (get-platform-stats)
-  {
-    total-services: (- (var-get next-service-id) u1),
-    platform-active: (var-get platform-active),
-    emergency-mode: (var-get emergency-mode),
-    minimum-service-amount: (var-get minimum-service-amount),
-    platform-fee-rate: PLATFORM-FEE-RATE,
-    primary-currency: "STX",
-    selection-model: "ai-predicted-success-with-dynamic-pricing",
-    native-blockchain: "Stacks",
-    payment-model: "stx-escrow-with-competency-adjustments",
-    min-success-threshold: MIN-SUCCESS-PROBABILITY,
-    dynamic-pricing-enabled: true
-  }
-)
-
-(define-read-only (get-enhanced-platform-stats)
-  {
-    total-services: (- (var-get next-service-id) u1),
-    platform-active: (var-get platform-active),
-    emergency-mode: (var-get emergency-mode),
-    minimum-service-amount: (var-get minimum-service-amount),
-    platform-fee-rate: PLATFORM-FEE-RATE,
-    primary-currency: "STX",
-    application-token: "SKILL",
-    application-cost: "0.1 STX per application",
-    selection-model: "ai-predicted-success-with-skill-token-applications",
-    native-blockchain: "Stacks",
-    payment-model: "stx-escrow-with-skill-token-spam-prevention",
-    min-success-threshold: MIN-SUCCESS-PROBABILITY,
-    dynamic-pricing-enabled: true,
-    skill-token-contract: (var-get skill-token-contract),
-    competitive-advantage: "Fixed 0.1 STX application fee vs 15-20% project fees elsewhere"
-  }
-)
-
-(define-read-only (get-stx-platform-info)
-  {
-    required-token: "STX (Stacks)",
-    application-token: "SKILL (0.1 STX per token)",
-    minimum-balance-for-jobs: (var-get minimum-service-amount),
-    platform-fee: "2.5%",
-    application-fee: "0.1 STX per application",
-    native-currency: true,
-    blockchain: "Stacks",
-    benefits: (list 
-      "Native STX tokens - no wrapping required"
-      "Direct wallet integration"
-      "Fast transaction settlement"
-      "Built-in escrow protection"
-      "AI-predicted success matching (80%+ only)"
-      "Dynamic pricing based on real competency"
-      "Performance-based payment adjustments"
-      "Spam-free applications with SKILL tokens"
-      "Much cheaper than 15-20% competitor fees"
-    )
-  }
-)
-
-;; ADMIN FUNCTIONS
-(define-public (set-skill-token-contract (skill-contract-addr principal))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
-    (asserts! (is-valid-principal skill-contract-addr) (err u117))
-    (var-set skill-token-contract skill-contract-addr)
+    ;; Authorization - only accepted freelancer can mark complete
+    (asserts! (get visible-to-freelancer acceptance-data) ERR-UNAUTHORIZED)
+    (asserts! (is-eq (get escrow-id acceptance-data) escrow-id) ERR-INVALID-STATE)
+    (asserts! (get escrow-created job-payment) ERR-INVALID-STATE)
+    
+    ;; Call escrow contract to mark as completed
+    (try! (contract-call? .escrow mark-job-completed escrow-id))
     
     (print {
-      type: "skill-token-contract-set",
-      contract-address: skill-contract-addr,
-      block: block-height
+      type: "freelancer-marked-job-completed",
+      external-job-id: external-job-id,
+      escrow-id: escrow-id,
+      freelancer: tx-sender,
+      awaiting-client-confirmation: true
     })
     
-    (ok skill-contract-addr)
+    (ok true)
   )
 )
 
-(define-read-only (get-skill-token-contract)
-  (var-get skill-token-contract)
-)
-
-(define-public (set-oracle-contract (oracle-addr principal))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
-    (asserts! (is-valid-principal oracle-addr) (err u117))
-    (var-set oracle-contract oracle-addr)
-    (ok oracle-addr)
+;; Client confirms job completion (Step 2 of 2) - triggers automatic payment
+(define-public (client-confirm-completion (external-job-id (string-ascii 64)))
+  (let 
+    (
+      (job-payment (unwrap! (map-get? job-payments external-job-id) ERR-NOT-FOUND))
+      (escrow-id (unwrap! (get escrow-id job-payment) ERR-NOT-FOUND))
+    )
+    ;; Authorization - only job creator can confirm
+    (asserts! (is-eq tx-sender (get client job-payment)) ERR-UNAUTHORIZED)
+    (asserts! (get escrow-created job-payment) ERR-INVALID-STATE)
+    
+    ;; Confirm completion through escrow contract (triggers automatic payment)
+    (try! (contract-call? .escrow confirm-job-completion escrow-id))
+    
+    ;; Update job status to completed
+    (map-set job-payments external-job-id
+      (merge job-payment { status: u2 })) ;; completed
+    
+    (print {
+      type: "client-confirmed-completion-payment-released",
+      external-job-id: external-job-id,
+      escrow-id: escrow-id,
+      client: tx-sender,
+      payment-released: true,
+      job-status: "completed"
+    })
+    
+    (ok true)
   )
 )
 
-(define-public (set-platform-active (active bool))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
-    (var-set platform-active active)
-    (ok active)
+;; Initiate dispute - proxy to escrow contract
+(define-public (initiate-job-dispute (external-job-id (string-ascii 64)))
+  (let 
+    (
+      (job-payment (unwrap! (map-get? job-payments external-job-id) ERR-NOT-FOUND))
+      (escrow-id (unwrap! (get escrow-id job-payment) ERR-NOT-FOUND))
+    )
+    ;; Authorization checked by escrow contract
+    (asserts! (get escrow-created job-payment) ERR-INVALID-STATE)
+    
+    ;; Initiate dispute through escrow contract
+    (try! (contract-call? .escrow initiate-dispute escrow-id))
+    
+    (print {
+      type: "job-dispute-initiated",
+      external-job-id: external-job-id,
+      escrow-id: escrow-id,
+      initiated-by: tx-sender
+    })
+    
+    (ok true)
   )
 )
 
-(define-public (set-emergency-mode (emergency bool))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
-    (var-set emergency-mode emergency)
-    (ok emergency)
+;; Job status function
+(define-read-only (get-job-complete-status (external-job-id (string-ascii 64)))
+  (let ((job-payment (map-get? job-payments external-job-id)))
+    (match job-payment
+      job-data
+      (let ((escrow-id (get escrow-id job-data)))
+        (match escrow-id
+          esc-id
+          ;; Get escrow status from escrow contract
+          (let ((escrow-result (contract-call? .escrow get-escrow-with-status esc-id)))
+            (match escrow-result
+              escrow-status
+              (ok {
+                job-payment: job-data,
+                escrow-status: (some escrow-status),
+                has-escrow: true,
+                freelancer-hired: (is-some (get accepted-freelancer job-data)),
+                job-stage: (if (is-eq (get status job-data) u0) 
+                  "posted-accepting-applications"
+                  (if (is-eq (get status job-data) u1)
+                    "freelancer-hired-work-in-progress"
+                    (if (is-eq (get status job-data) u2)
+                      "completed"
+                      "cancelled")))
+              })
+              escrow-error
+              (ok {
+                job-payment: job-data,
+                escrow-status: none,
+                has-escrow: false,
+                freelancer-hired: false,
+                job-stage: "error-fetching-escrow-status"
+              })
+            )
+          )
+          (ok {
+            job-payment: job-data,
+            escrow-status: none,
+            has-escrow: false,
+            freelancer-hired: false,
+            job-stage: "posted-no-escrow"
+          })
+        )
+      )
+      ERR-NOT-FOUND
+    )
   )
 )
 
-(define-public (set-minimum-service-amount (amount uint))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
-    (asserts! (> amount u0) (err u110))
-    (asserts! (<= amount u100000000) (err u110))
-    (var-set minimum-service-amount amount)
-    (ok amount)
-  )
+;; Platform statistics
+(define-read-only (get-platform-stats)
+  {
+    total-jobs-created: (var-get total-jobs-created),
+    total-fees-collected-stx: (var-get total-fees-collected),
+    active: (var-get platform-active),
+    job-creation-fee: JOB-CREATION-FEE-STX,
+    min-stx-balance: MIN-STX-BALANCE,
+    min-sbtc-escrow: MIN-SBTC-ESCROW,
+    payment-currency: "sBTC",
+    platform-currency: "STX",
+    completion-process: "two-step-confirmation",
+    key-feature: "Escrow-first acceptance - freelancers only see acceptance after funds locked",
+    workflow: "Post job > Accept freelancer with escrow > Freelancer works > Two-step completion",
+    security-improvement: "Prevents fake acceptances and ensures immediate payment security"
+  }
 )
 
-(define-public (set-treasury-address (treasury principal))
+;; Admin functions
+(define-public (set-treasury (treasury principal))
   (begin
-    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
-    (asserts! (is-valid-principal treasury) (err u117))
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-UNAUTHORIZED)
+    (asserts! (is-valid-principal treasury) ERR-INVALID-INPUT)
     (var-set platform-treasury treasury)
     (ok treasury)
   )
 )
 
-;; EMERGENCY FUNCTIONS
-(define-public (emergency-service-cancel (service-id uint))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u108))
-    (asserts! (and (> service-id u0) (< service-id (var-get next-service-id))) (err u117))
-    (asserts! (var-get emergency-mode) (err u100))
-    
-    (let 
-      (
-        (service-info (unwrap! (map-get? service-requests service-id) (err u101)))
-        (escrow-info (unwrap! (map-get? payment-escrow-system service-id) (err u101)))
-      )
-      (try! (as-contract (stx-transfer? 
-        (get total-escrowed-amount escrow-info) tx-sender (get client-address service-info))))
-      
-      (map-set service-requests service-id
-        (merge service-info { current-status: u5 })
-      )
-      
-      (map-set payment-escrow-system service-id
-        (merge escrow-info { funds-locked-status: false })
-      )
-      
-      (ok true)
-    )
-  )
-)
-
-(define-public (emergency-pause)
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT-OWNER) (err u118))
-    (var-set platform-active false)
-    (var-set emergency-mode true)
-    (ok true)
-  )
+;; Get contract info
+(define-read-only (get-contract-info)
+  {
+    treasury: (var-get platform-treasury),
+    platform-active: (var-get platform-active),
+    job-creation-fee: JOB-CREATION-FEE-STX,
+    min-balances: {
+      stx: MIN-STX-BALANCE,
+      sbtc: MIN-SBTC-ESCROW
+    },
+    total-stats: {
+      jobs-created: (var-get total-jobs-created),
+      fees-collected: (var-get total-fees-collected)
+    },
+    architecture: "Escrow-first acceptance model",
+    key-change: "Client must deposit sBTC before freelancer sees acceptance",
+    completion-process: {
+      type: "two-step-confirmation",
+      step1: "Freelancer marks job completed",
+      step2: "Client confirms completion", 
+      step3: "Payment automatically released"
+    },
+    workflow: {
+      step1: "Client posts job (pays STX fee)",
+      step2: "Freelancers apply off-chain",
+      step3: "Client accepts freelancer + deposits sBTC in one transaction",
+      step4: "Freelancer sees acceptance notification with secured funds",
+      step5: "Work period with funds safely escrowed",
+      step6: "Two-step completion process"
+    },
+    security-benefits: {
+      no-fake-acceptances: "Freelancer only sees acceptance when funds are locked",
+      immediate-security: "Payment guaranteed from moment of acceptance",
+      client-commitment: "Client must commit funds to hire freelancer"
+    }
+  }
 )

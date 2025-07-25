@@ -1,574 +1,381 @@
-# SkillFlow Platform
+# SkillFlow Smart Contracts
 
-**The Future of Freelancing on Stacks Blockchain**
+##  Overview
 
-AI-powered skill marketplace with 80%+ success prediction, dynamic competency-based pricing, SKILL token spam prevention, and native STX payments.
+SkillFlow is a decentralized freelancing platform built on the Stacks blockchain that leverages Bitcoin's security through sBTC for payments. The platform eliminates trust issues between clients and freelancers by using smart contract-enforced escrows and a innovative two-step completion process.
 
-## What is SkillFlow?
+###  Key Features
 
-SkillFlow is a revolutionary freelancing platform built on the Stacks blockchain that uses artificial intelligence to predict project success rates and match clients with the most suitable service providers. Our platform ensures 80%+ success rates by only suggesting pre-verified, high-performing providers while giving opportunities to newcomers through our innovative 30% quota system.
+- ** Escrow-First Acceptance**: Freelancers only see job acceptance after funds are locked
+- ** Instant Payment Security**: Funds secured the moment freelancer is hired
+- ** Two-Step Completion**: Mutual agreement required before payment release
+- ** Fair Dispute Resolution**: Platform-mediated conflict resolution
+- ** Bitcoin Payments**: Native sBTC integration for global accessibility
+- ** Spam Protection**: STX fees prevent fake job postings
 
-### Key Features
+## Architecture
 
-- **AI Success Prediction**: Only providers with 80%+ predicted success rates get matched
-- **STX Native Payments**: Direct Stacks token integration - no wrapping required
-- **SKILL Token Spam Prevention**: 0.1 STX application fee via SKILL tokens (much cheaper than 15-20% competitor fees)
-- **Smart Escrow**: Automatic payment protection and release
-- **Dynamic Competency Pricing**: Real-time price adjustments based on demonstrated skills
-- **New Provider Opportunities**: 30% quota system ensuring newcomer inclusion
-- **Real-time Skill Verification**: Optional AI assessment with skill score boosts
-- **Built-in Dispute Resolution**: Fair mediation system
-- **Transparent Fees**: 2.5% platform fee with full transparency
-
-## Revolutionary Features
-
-### SKILL Token Application System
-- **Application Fee**: 0.1 STX per application (via SKILL tokens)
-- **Spam Prevention**: Eliminates low-quality applications
-- **Cost Advantage**: Massive savings vs 15-20% fees on other platforms
-- **Simple Purchase**: 0.1 STX = 1 SKILL token for applications
-
-### Success Prediction Algorithm
-- **Experienced Providers**: 80% minimum success prediction required
-- **New Providers**: 70% threshold with trial period support
-- **AI Filtering**: Only high-probability success matches suggested
-- **Risk Assessment**: Detailed risk factors and recommended adjustments
-
-### Quota-Based Fair Matching
-- **30% New Provider Quota**: Ensures opportunities for emerging talent
-- **70% Experienced Provider Quota**: Maintains quality standards
-- **Minimum Guarantees**: At least 1 new provider suggestion per service
-- **Maximum Suggestions**: Up to 5 total suggestions per service request
-
-### Dynamic Competency-Based Pricing
-- **Performance Bonuses**: Up to 20% bonus for skill overperformance
-- **Competency Penalties**: Up to 30% reduction for underperformance
-- **Real-time Adjustments**: Pricing updates based on demonstrated abilities
-- **Fair Compensation**: Pay reflects actual skill demonstration
-
-## Architecture Overview
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Client App    │    │  AI Oracle      │    │ Provider Tools  │
-│                 │    │                 │    │                 │
-│ • Service Req.  │    │ • Success Pred. │    │ • SKILL Token   │
-│ • Provider Sel. │    │ • Skill Verify  │    │ • Applications  │
-│ • STX Payments  │    │ • Price Oracle  │    │ • Portfolio     │
-│ • Rating System │    │ • Competency    │    │ • Verification  │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         └───────────────────────┼───────────────────────┘
-                                 │
-                    ┌─────────────────┐
-                    │ SkillFlow Core  │
-                    │                 │
-                    │ • Smart Escrow  │
-                    │ • Quota System  │
-                    │ • SKILL Tokens  │
-                    │ • Success Filter│
-                    │ • Dynamic Pricing│
-                    └─────────────────┘
-                                 │
-                    ┌─────────────────┐
-                    │ Stacks Network  │
-                    │                 │
-                    │ • STX Payments  │
-                    │ • Clarity VM    │
-                    │ • Bitcoin Security│
-                    └─────────────────┘
+```mermaid
+graph TB
+    A[Client Posts Job] --> B[Pays 1 STX Fee]
+    B --> C[Job Listed Off-Chain]
+    C --> D[Freelancers Apply]
+    D --> E[Client Selects Freelancer]
+    E --> F[Client Deposits sBTC + Accepts]
+    F --> G[Escrow Locks Funds]
+    G --> H[Freelancer Notified]
+    H --> I[Work Period]
+    I --> J[Freelancer Marks Complete]
+    J --> K[Client Confirms]
+    K --> L[Payment Released]
+    
+    style F fill:#ff9999
+    style G fill:#99ff99
+    style L fill:#99ccff
 ```
 
-## Smart Contract Components
+## Contract Overview
 
 ### Core Contracts
 
 | Contract | Purpose | Key Functions |
 |----------|---------|---------------|
-| `skillflow-main.clar` | Main platform logic | Service creation, provider selection, payments, quota system |
-| `skills-token-simple.clar` | SKILL token management | Token purchases, application fees, spam prevention |
-| `oracle.clar` | AI predictions & pricing | Success prediction, skill verification, STX price feeds |
-| `constants.clar` | Platform configuration | Error codes, fee rates, success thresholds, quotas |
-| `utils.clar` | Validation & utilities | Input validation, STX calculations, formatting |
+| **constants.clar** | Platform configuration | Fee rates, limits, error codes |
+| **sip010-trait.clar** | Token standard interface | sBTC compatibility |
+| **sbtc-mock.clar** | Payment system (dev) | Token transfers, balances |
+| **escrow.clar** | Trust engine | Fund locking, completion flow |
+| **skillflow-main.clar** | Platform orchestrator | Job management, user interface |
 
-### Contract Addresses (Mainnet)
+### Contract Relationships
+
 ```
-Main Contract:     SP1234...MAIN
-SKILL Token:       SP1234...SKILL
-Oracle Contract:   SP1234...ORACLE
-Constants:         SP1234...CONST
-Utils:             SP1234...UTILS
+skillflow-main.clar (Orchestrator)
+    ├── escrow.clar (Security Layer)
+    │   └── sbtc-moc.clar (Payment Layer)
+    ├── constants.clar (Configuration)
+    └── sip010-trait.clar (Standards)
 ```
 
-## Prerequisites
+## Installation
 
-- **Stacks Wallet**: [Hiro Wallet](https://wallet.hiro.so/) or [Xverse](https://www.xverse.app/)
-- **STX Tokens**: Minimum 1 STX for service requests + 0.1 STX per application
-- **SKILL Tokens**: Purchase with STX for application fees (0.1 STX = 1 SKILL)
-- **Clarinet**: For local development and testing
-- **Node.js**: Version 16+ for frontend integration
+### Prerequisites
 
-## Quick Start
+- [Clarinet](https://github.com/hirosystems/clarinet) v2.0+
+- [Node.js](https://nodejs.org/) v18+
 
-### For Clients (Service Requesters)
+### Setup
 
-1. **Connect Your Wallet**
-   ```javascript
-   // Using @stacks/connect
-   import { showConnect } from '@stacks/connect';
-   
-   const connectWallet = () => {
-     showConnect({
-       appDetails: {
-         name: 'SkillFlow',
-         icon: window.location.origin + '/logo.svg',
-       },
-       redirectTo: '/dashboard',
-       onFinish: () => window.location.reload(),
-     });
-   };
-   ```
-
-2. **Create a Service Request**
-   ```clarity
-   ;; Example: Request a logo design with AI suggestions
-   (contract-call? .skillflow-main create-service-request
-     "Logo Design"
-     "Need a modern logo for my tech startup with brand guidelines"
-     u5000000  ;; 5 STX
-     false     ;; not rush delivery
-     u240      ;; 4 hours estimated
-     true      ;; request AI suggestions (80%+ providers only)
-   )
-   ```
-
-3. **Review AI-Suggested Providers**
-   - View providers with 80%+ success prediction
-   - See new provider opportunities (30% quota)
-   - Check competency scores and pricing adjustments
-   - Select your preferred provider
-
-4. **Automatic STX Escrow**
-   - Funds automatically locked until completion
-   - Provider receives payment based on competency performance
-   - Platform takes 2.5% fee
-
-### For Providers (Service Deliverers)
-
-1. **Buy SKILL Tokens for Applications**
-   ```clarity
-   ;; Buy 10 SKILL tokens for applications (1 STX total)
-   (contract-call? .skills-token-simple buy-skill-tokens u10000000)
-   ```
-
-2. **Create Provider Profile**
-   ```clarity
-   (contract-call? .skillflow-main create-provider-profile
-     (list "Web Development" "React" "Node.js" "Smart Contracts" "UI/UX")
-   )
-   ```
-
-3. **Start New Provider Onboarding (Optional)**
-   ```clarity
-   ;; For new providers - get trial project access
-   (contract-call? .skillflow-main start-new-provider-onboarding
-     (list "React" "TypeScript" "Node.js")
-     (list "github.com/portfolio" "live-demo.com")
-     (list "LinkedIn Profile" "Previous Work Examples")
-   )
-   ```
-
-4. **Apply to Services (Uses SKILL Tokens)**
-   ```clarity
-   ;; Each application costs 1 SKILL token (0.1 STX equivalent)
-   (contract-call? .skillflow-main apply-to-service
-     u1  ;; service-id
-     "Perfect match! I have 5+ years React experience..."
-     u180  ;; 3 hours timeline
-     (list "github.com/mywork" "portfolio.com" "testimonials.com")
-     (some u4500000)  ;; propose 4.5 STX
-     (some "What's your preferred color scheme and brand personality?")
-   )
-   ```
-
-5. **Benefit from Dynamic Pricing**
-   - Demonstrate high competency → earn up to 20% bonus
-   - Build reputation for 80%+ success rate matching
-   - Access more high-value projects
-
-### For New Providers
-
-1. **Trial Period Benefits**
-   - First 3 projects with 70% success threshold (vs 80%)
-   - Included in 30% new provider quota
-   - Optional skill verification for score boosts
-
-2. **Skill Verification Boost (Optional)**
-   ```clarity
-   ;; AI can award 5-25 point skill boosts
-   ;; Called by oracle after skill demonstration
-   (contract-call? .skillflow-main give-skill-verification-boost
-     'SP1234...PROVIDER
-     "React Development"
-     u15  ;; 15-point boost
-   )
-   ```
-
-## Development Setup
-
-### 1. Clone Repository
 ```bash
-git clone Repository
-cd Repository
-```
+# Clone the repository
+git clone github repo
+cd repo
 
-### 2. Install Dependencies
-```bash
-npm install
-```
-
-### 3. Setup Clarinet
-```bash
-# Install Clarinet
-brew install clarinet
+# Install Clarinet (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+clarinet --version
 
 # Initialize project
 clarinet new Stacks-Skills
 cd Stacks-Skills
+
+# Copy contracts to contracts/ directory
+cp ../contracts/*.clar contracts/
+
+# Run initial checks
+clarinet check
 ```
 
-### 4. Deploy Contracts Locally
-```bash
-# Test all contracts including SKILL token
-clarinet test
+### Project Structure
 
-# Deploy to local testnet
-clarinet integrate
+```
+skillflow-contracts/
+├── contracts/
+│   ├── constants.clar          # Platform configuration
+│   ├── sip010-trait.clar       # Token standard
+│   ├── sbtc-moc.clar         # Mock sBTC for testing
+│   ├── escrow.clar            # Escrow system
+│   └── skillflow-main.clar    # Main platform
+├── tests/
+│   ├── constants_test.ts
+│   ├── escrow_test.ts
+├── settings/
+│   └── Devnet.toml
+├── Clarinet.toml
+└── README.md
 ```
 
-### 5. Environment Variables
-```bash
-# .env.local
-NEXT_PUBLIC_NETWORK=testnet
-NEXT_PUBLIC_MAIN_CONTRACT=ST1234...MAIN
-NEXT_PUBLIC_SKILL_TOKEN_CONTRACT=ST1234...SKILL
-NEXT_PUBLIC_ORACLE_CONTRACT=ST1234...ORACLE
+## Usage Guide
+
+### For Clients
+
+#### 1. Post a Job
+
+```clarity
+;; Pay job creation fee
+(contract-call? .skillflow-main pay-job-creation-fee "website-project-123")
+```
+
+**Requirements:**
+- Minimum 1 STX balance
+- Unique job ID
+- Valid principal address
+
+#### 2. Accept Freelancer with Escrow
+
+```clarity
+;; Hire freelancer and lock funds in one transaction
+(contract-call? .skillflow-main accept-freelancer-with-escrow
+  "website-project-123"           ;; job-id
+  'ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5  ;; freelancer
+  u100000000)                     ;; 0.1 sBTC
+```
+
+**What happens:**
+- sBTC transferred from client to escrow
+- Freelancer notified of acceptance
+- Job status updated to "hired"
+
+#### 3. Confirm Job Completion
+
+```clarity
+;; Step 2 of completion process
+(contract-call? .skillflow-main client-confirm-completion "website-project-123")
+```
+
+### For Freelancers
+
+#### 1. Check Job Acceptance Status
+
+```clarity
+;; See if you've been hired for a job
+(contract-call? .skillflow-main check-freelancer-acceptance 
+  "website-project-123"
+  tx-sender)
+```
+
+#### 2. Mark Job as Completed
+
+```clarity
+;; Step 1 of completion process
+(contract-call? .skillflow-main freelancer-mark-completed "website-project-123")
+```
+
+### For Both Parties
+
+#### Initiate Dispute
+
+```clarity
+;; If there's a problem with the job
+(contract-call? .skillflow-main initiate-job-dispute "website-project-123")
+```
+
+## API Reference
+
+### Main Contract Functions
+
+#### Public Functions
+
+| Function | Parameters | Description | Authorization |
+|----------|------------|-------------|---------------|
+| `pay-job-creation-fee` | `job-id` | Post new job | Any user with 1+ STX |
+| `accept-freelancer-with-escrow` | `job-id`, `freelancer`, `amount` | Hire + fund escrow | Job creator only |
+| `freelancer-mark-completed` | `job-id` | Mark work done | Hired freelancer only |
+| `client-confirm-completion` | `job-id` | Confirm & release payment | Job creator only |
+| `initiate-job-dispute` | `job-id` | Start dispute process | Client or freelancer |
+
+#### Read-Only Functions
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `check-freelancer-acceptance` | Acceptance status | Check if freelancer hired |
+| `get-job-complete-status` | Job status details | Complete job information |
+| `get-platform-stats` | Platform metrics | Usage statistics |
+
+### Escrow Contract Functions
+
+#### Public Functions
+
+| Function | Parameters | Description | Authorization |
+|----------|------------|-------------|---------------|
+| `create-escrow` | `job-id`, `client`, `freelancer`, `amount` | Lock funds | Main contract only |
+| `mark-job-completed` | `escrow-id` | Freelancer completion | Freelancer only |
+| `confirm-job-completion` | `escrow-id` | Release payment | Client only |
+| `initiate-dispute` | `escrow-id` | Start dispute | Client or freelancer |
+| `resolve-dispute` | `escrow-id`, `refund-percentage` | Admin resolution | Platform admin only |
+
+## Security Features
+
+### 1. Escrow-First Acceptance Model
+
+**Problem Solved:** Fake job acceptances without payment commitment
+
+**Solution:** 
+- Freelancers only see acceptance after sBTC is locked in escrow
+- Prevents clients from creating false hope without financial commitment
+- Guarantees immediate payment security
+
+### 2. Two-Step Completion Process
+
+**Problem Solved:** Payment disputes and rushed transactions
+
+**Solution:**
+```
+Step 1: Freelancer marks job completed
+Step 2: Client confirms satisfaction
+Result: Automatic payment release
+```
+
+### 3. Time-Based Dispute Window
+
+- **20-day dispute period** after escrow creation
+- Prevents indefinite holds on funds
+- Encourages timely resolution
+
+### 4. Input Validation
+
+```clarity
+;; Example validation functions
+(define-private (is-valid-sbtc-amount (amount uint))
+  (and (>= amount u100000) (<= amount u100000000000))) ;; 0.001 to 1000 sBTC
+
+(define-private (is-valid-principal (addr principal))
+  (and 
+    (not (is-eq addr 'SP000000000000000000002Q6VF78))
+    (not (is-eq addr (as-contract tx-sender)))))
+```
+
+### 5. Access Control
+
+- **Role-based permissions** for all functions
+- **Contract owner privileges** for admin functions
+- **Participant validation** for escrow operations
+
+## Economic Model
+
+### Fee Structure
+
+| Operation | Fee | Currency | Purpose |
+|-----------|-----|----------|---------|
+| Job Creation | 1 STX | STX | Spam prevention |
+| Transaction Fee | 2.5% | sBTC | Platform sustainability |
+| Dispute Resolution | Included | - | Conflict resolution |
+
+### Revenue Distribution
+
+```
+Successful Job (100 sBTC payment):
+├── Freelancer: 97.5 sBTC (97.5%)
+├── Platform: 2.5 sBTC (2.5%)
+└── Gas Costs: Covered by users
+```
+
+### Minimum Requirements
+
+- **Client Balance:** 1+ STX for job posting
+- **Escrow Minimum:** 0.001 sBTC
+- **Maximum Escrow:** 1,000 sBTC per job
+
+### Contract Deployment Order
+
+1. `sip010-trait.clar` - Token standard
+2. `constants.clar` - Platform configuration  
+3. `sbtc-mock.clar` - Payment system
+4. `escrow.clar` - Trust engine
+5. `skillflow-main.clar` - Platform orchestrator
+
+### Environment Configuration
+
+```toml
+# settings/Devnet.toml
+[network]
+name = "devnet"
+
+[[network.accounts]]
+name = "deployer"
+address = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM"
+balance = 100000000000000
+
+[[network.accounts]]
+name = "client1"
+address = "ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5"
+balance = 100000000000000
+
+[[network.accounts]]
+name = "freelancer1"
+address = "ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG"
+balance = 100000000000000
 ```
 
 ## Testing
 
-### Run Contract Tests
+### Test Categories
+
+1. **Unit Tests** - Individual contract functions
+2. **Security Tests** - Attack vector validation
+3. **Economic Tests** - Fee calculation accuracy
+
+### Running Tests
+
 ```bash
-# Test all contracts
-clarinet test
+# All tests
+npm test
 
-# Test SKILL token integration
-clarinet test tests/skills-token.test.ts
+# Specific test file
+npm test tests/escrow-test.ts
 
-# Test quota system
-clarinet test tests/quota-system.test.ts
-
-# Test success prediction
-clarinet test tests/success-prediction.test.ts
-
-# Coverage report
-clarinet test --coverage
+# With coverage
+npm test --coverage
 ```
 
-### Test Scenarios
-```clarity
-;; Test SKILL token purchase and application
-(define-test-case test-skill-token-application
-  (let ((buy-result (contract-call? .skills-token-simple buy-skill-tokens u1000000))
-        (apply-result (contract-call? .skillflow-main apply-to-service
-                        u1 "Test application" u60 (list) none none)))
-    (assert-ok buy-result)
-    (assert-ok apply-result)
-  )
-)
+### Example Test Case
 
-;; Test quota system enforcement
-(define-test-case test-quota-system
-  (let ((quota-init (contract-call? .skillflow-main initialize-service-suggestion-quota u1)))
-    (assert-ok quota-init)
-    ;; Verify 30% new provider quota is enforced
-  )
-)
-
-;; Test success prediction filtering
-(define-test-case test-success-filtering
-  ;; Test that only 80%+ providers get suggested for experienced category
-  ;; Test that 70%+ new providers get trial opportunities
-)
+```typescript
+    // 1. Client posts job
+    let block = chain.mineBlock([
+      Tx.contractCall("skillflow-main", "pay-job-creation-fee", [
+        types.ascii("test-job-123")
+      ], client.address)
+    ]);
+    
+    // 2. Client accepts freelancer with escrow
+    block = chain.mineBlock([
+      Tx.contractCall("skillflow-main", "accept-freelancer-with-escrow", [
+        types.ascii("test-job-123"),
+        types.principal(freelancer.address),
+        types.uint(10000000) // 0.01 sBTC
+      ], client.address)
+    ]);
+    
+    // Continue test...;
 ```
 
-## Platform Economics
+## Deployment
 
-### Revolutionary Cost Structure
-- **Application Fee**: 0.1 STX per application (via SKILL tokens)
-- **Platform Fee**: 2.5% of service amount
-- **Massive Savings**: Avoid 15-20% fees charged by competitors
-- **Example**: 100 applications = 10 STX vs $1000+ in percentage fees elsewhere
+### Mainnet Deployment Checklist
 
-### SKILL Token Economics
-- **Price**: 0.1 STX = 1 SKILL token
-- **Usage**: 1 SKILL token per application
-- **Supply**: 10 million maximum SKILL tokens
-- **Benefit**: Fixed cost vs percentage-based competitor fees
+- [ ] All tests passing
+- [ ] Security audit completed
+- [ ] Documentation updated
+- [ ] Frontend integration tested
+- [ ] Admin keys secured
+- [ ] Emergency procedures documented
 
-### Success Rate Requirements
-- **Experienced Providers**: 80% minimum success prediction
-- **New Providers**: 70% minimum with 3-project trial period
-- **Competency Bonuses**: Up to 20% payment increase for overperformance
-- **Performance Penalties**: Up to 30% reduction for underperformance
+### Deployment Commands
 
-### Quota System Economics
-- **30%** of suggestions reserved for new providers
-- **70%** for experienced providers (80%+ success rate)
-- **Minimum 1** new provider suggestion per service
-- **Maximum 5** total suggestions per service
+```bash
+# Deploy to testnet
+clarinet deploy --testnet
 
-## Advanced Features
-
-### Success Prediction Algorithm
-```clarity
-;; AI Oracle creates suggestions with success prediction
-(create-ai-suggested-application-with-prediction
-  service-id: uint
-  suggested-provider: principal
-  estimated-timeline: uint
-  success-probability: uint  ;; Must be 80%+ for experienced
-  risk-factors: (list 10 (string-ascii 50))
-  recommended-adjustments: (string-ascii 300)
-  initial-skill-score: uint
-)
+# Deploy to mainnet (requires preparation)
+clarinet deploy --mainnet
 ```
 
-### Dynamic Competency Pricing
-```clarity
-;; Competency assessment affects final payment
-(map competency-assessments
-  { service-id: uint, provider: principal }
-  {
-    initial-skill-score: uint,
-    demonstrated-competency: uint,
-    competency-verified: bool,
-    price-adjustment-factor: uint,  ;; 5000-15000 (50%-150%)
-    assessment-timestamp: uint,
-    verification-evidence: (optional (string-ascii 200))
-  }
-)
+### Post-Deployment Verification
+
+```bash
+# Verify contract deployment
+clarinet run scripts/verify-deployment.ts
+
+# Check contract state
+clarinet console
 ```
-
-### New Provider Trial System
-```clarity
-;; Special trial period for new providers
-(map new-provider-trials
-  principal
-  {
-    trial-projects-completed: uint,
-    trial-success-rate: uint,
-    skill-verification-score: uint,
-    portfolio-verification-score: uint,
-    external-verification-score: uint,
-    trial-period-active: bool,
-    trial-start-block: uint
-  }
-)
-```
-
-## Security Features
-
-### Smart Contract Security
-- **SKILL Token Protection**: Secure token minting and burning
-- **Escrow Protection**: Funds locked until completion or dispute resolution
-- **Input Validation**: All parameters sanitized and validated
-- **Access Control**: Role-based permissions for all operations
-- **Emergency Controls**: Pause functionality for critical issues
-
-### Anti-Spam Protection
-- **SKILL Token Gate**: 0.1 STX cost prevents spam applications
-- **Quality Filter**: Only verified providers can apply
-- **Rate Limiting**: Maximum applications per provider per time period
-- **Success Threshold**: Minimum prediction scores required
-
-### Oracle Security
-- **Price Feed Validation**: Multiple source verification for STX prices
-- **Staleness Checks**: Price data freshness validation
-- **Confidence Scoring**: AI prediction reliability metrics
-- **Success Rate Tracking**: Continuous monitoring of prediction accuracy
-
-## API Reference
-
-### SKILL Token Functions
-
-#### Buy SKILL Tokens
-```clarity
-(buy-skill-tokens 
-  skill-amount: uint
-) -> (response uint uint)
-```
-
-#### Check Application Eligibility
-```clarity
-(check-application-eligibility 
-  provider: principal
-  service-id: uint
-) -> (response application-eligibility-info uint)
-```
-
-#### Get Token Info
-```clarity
-(get-user-token-info 
-  user: principal
-) -> (response token-info uint)
-```
-
-### Enhanced Client Functions
-
-#### Create Service with AI Matching
-```clarity
-(create-service-request 
-  skill-category: (string-ascii 50)
-  service-description: (string-ascii 500)
-  payment-amount: uint
-  rush-delivery: bool
-  duration-minutes: uint
-  request-ai-suggestions: bool  ;; Get 80%+ success rate providers
-) -> (response uint uint)
-```
-
-### Advanced Provider Functions
-
-#### Apply with SKILL Token Fee
-```clarity
-(apply-to-service
-  service-id: uint
-  application-message: (string-ascii 300)
-  proposed-timeline: uint
-  portfolio-links: (list 5 (string-ascii 200))
-  proposed-price: (optional uint)
-  provider-questions: (optional (string-ascii 200))
-) -> (response bool uint)
-;; Note: Automatically deducts 1 SKILL token
-```
-
-#### Start New Provider Onboarding
-```clarity
-(start-new-provider-onboarding
-  skills-to-verify: (list 5 (string-ascii 50))
-  portfolio-links: (list 5 (string-ascii 200))
-  external-verifications: (list 3 (string-ascii 300))
-) -> (response bool uint)
-```
-
-### AI Oracle Functions
-
-#### Create Experienced Provider Suggestion
-```clarity
-(create-experienced-provider-suggestion
-  service-id: uint
-  suggested-provider: principal
-  estimated-timeline: uint
-  success-probability: uint  ;; Must be >= 80%
-  risk-factors: (list 10 (string-ascii 50))
-  recommended-adjustments: (string-ascii 300)
-  initial-skill-score: uint
-) -> (response bool uint)
-```
-
-#### Give Skill Verification Boost
-```clarity
-(give-skill-verification-boost
-  provider: principal
-  skill: (string-ascii 50)
-  boost-amount: uint  ;; 5-25 points
-) -> (response uint uint)
-```
-
-## Cost Comparison
-
-### SkillFlow vs Competitors
-
-| Platform | Application Fee | Project Fee | 100 Applications Cost |
-|----------|----------------|-------------|----------------------|
-| **SkillFlow** | **0.1 STX** | **2.5%** | **10 STX (~$20)** |
-| Upwork | Free | 20% | $0 + 20% of all projects |
-| Fiverr | Free | 20% | $0 + 20% of all projects |
-| Freelancer | $3-15 per bid | 10% | $300-1500 + 10% |
-
-### Real Cost Example
-- **100 applications on SkillFlow**: 10 STX (~$20)
-- **Same volume on percentage platforms**: 15-20% of ALL project values
-- **Break-even**: After just $100 in project value, SkillFlow is cheaper
-- **At $10,000 projects**: Save $1,500-2,000 vs competitors
-
-## Roadmap
-
-### Phase 1: Core Platform ✅
-- [x] Smart contract development
-- [x] SKILL token integration
-- [x] AI success prediction (80%+ filtering)
-- [x] Quota system (30% new providers)
-- [x] Dynamic competency pricing
-- [x] New provider trial system
-
-### Phase 2: Enhanced Features
-- [ ] Mobile application with SKILL token integration
-- [ ] Advanced dispute resolution with competency consideration
-- [ ] Multi-token support while maintaining SKILL for applications
-- [ ] Reputation NFTs for top performers
-
-### Phase 3: Ecosystem Growth
-- [ ] API marketplace for third-party integrations
-- [ ] White-label platform licensing
-- [ ] DAO governance for platform parameters
-- [ ] Cross-chain SKILL token bridges
-
-### Phase 4: Enterprise & Scale
-- [ ] Enterprise solutions with bulk SKILL token purchasing
-- [ ] AI model marketplace for specialized predictions
-- [ ] Advanced analytics and success prediction training
-- [ ] Global expansion with localized skill verification
-
-## Why SkillFlow Wins
-
-### For Clients
-- **Quality Guarantee**: 80%+ success rate with AI matching
-- **Cost Effective**: 2.5% platform fee vs 15-20% elsewhere
-- **Spam-Free**: SKILL token filter ensures quality applications
-- **Bitcoin Security**: Stacks blockchain provides maximum security
-- **Fair Pricing**: Competency-based adjustments ensure fair compensation
-
-### For Providers
-- **Equal Opportunities**: 30% quota guarantees new provider inclusion
-- **Performance Rewards**: Up to 20% bonus for skill demonstration
-- **Low Application Costs**: 0.1 STX per application vs percentage-based fees
-- **Trial Period**: New providers get 70% threshold for first 3 projects
-- **Skill Recognition**: Optional verification boosts for demonstrated abilities
-
-### For New Providers
-- **Guaranteed Inclusion**: 30% of all suggestions reserved for newcomers
-- **Lower Barriers**: 70% success threshold during trial period
-- **Skill Development**: Optional verification with AI assessment
-- **Fair Competition**: Protected quota prevents experienced provider dominance
-
-### For the Ecosystem
-- **Revolutionary Economics**: Fixed application fees vs percentage exploitation
-- **Open Source**: Fully auditable smart contracts
-- **Decentralized**: No single point of failure
-- **Sustainable**: Community-driven development with fair economics
-
----
-
-## Get Started Today
-
-1. **Set up Stacks wallet**
-2. **Buy some STX tokens**
-3. **Purchase SKILL tokens for applications (0.1 STX each)**
-4. **Create your profile**
-5. **Start earning with guaranteed fair opportunities**
-
-**Join the freelancing revolution that puts fairness and quality first!**
-
----

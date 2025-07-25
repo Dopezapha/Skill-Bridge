@@ -1,32 +1,34 @@
 [project]
 name = 'Stacks-Skills'
-description = ''
+description = 'SkillFlow - Bitcoin-native freelancing platform'
 authors = []
 telemetry = true
 cache_dir = '.\.cache'
-requirements = []
+
+[[project.requirements]]
+contract_id = 'SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token'
 [contracts.constants]
 path = 'contracts/constants.clar'
 clarity_version = 2
 epoch = 2.5
 
-[contracts.oracle]
-path = 'contracts/oracle.clar'
+[contracts.escrow]
+path = 'contracts/escrow.clar'
+clarity_version = 2
+epoch = 2.5
+
+[contracts.sbtc-moc]
+path = 'contracts/sbtc-moc.clar'
+clarity_version = 2
+epoch = 2.5
+
+[contracts.sip010-trait]
+path = 'contracts/sip010-trait.clar'
 clarity_version = 2
 epoch = 2.5
 
 [contracts.skillflow-main]
 path = 'contracts/skillflow-main.clar'
-clarity_version = 2
-epoch = 2.5
-
-[contracts.skills-token]
-path = 'contracts/skills-token.clar'
-clarity_version = 2
-epoch = 2.5
-
-[contracts.utils]
-path = 'contracts/utils.clar'
 clarity_version = 2
 epoch = 2.5
 [repl.analysis]
